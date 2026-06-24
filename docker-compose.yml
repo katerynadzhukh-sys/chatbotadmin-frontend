@@ -7,4 +7,9 @@ services:
       - "8080:80"             # Maps host port 8080 to container port 80
     restart: always
     pull_policy: always
+    environment:
+      - HTTP_PROXY=http://10.60.3.254:3128
+      - HTTPS_PROXY=http://10.60.3.254:3128
+      - NO_PROXY=localhost,127.0.0.1
+
 
