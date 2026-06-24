@@ -6,6 +6,7 @@ const STORAGE_KEY = "chatbotadmin.widgets";
 export function createDefaultConfig(): WidgetConfig {
   return {
     apiKey: `sk-${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`,
+    model: "",
     startPrompt: "Du bist ein hilfreicher Assistent. Beantworte Fragen freundlich und sachlich.",
     templates: [],
     rules: [],

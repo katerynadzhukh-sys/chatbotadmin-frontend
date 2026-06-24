@@ -1,5 +1,6 @@
 import { Link } from "react-router-dom";
 import { Icon } from "./Icon";
+import { WidgetIcon } from "./WidgetIcon";
 import type { Widget } from "../types/widget";
 
 const accentClasses: Record<Widget["accent"], { iconBg: string; iconText: string }> = {
@@ -25,7 +26,7 @@ export function WidgetCard({ widget }: WidgetCardProps) {
     <div className="bg-surface-container-lowest border border-outline-variant rounded-xl p-4 shadow-sm hover:shadow-md hover:-translate-y-1 transition-all flex flex-col">
       <div className="flex justify-between items-start mb-3">
         <div className={`w-10 h-10 ${accent.iconBg} rounded-xl flex items-center justify-center`}>
-          <Icon name={widget.icon} className={accent.iconText} />
+          <WidgetIcon name={widget.icon} className={accent.iconText} />
         </div>
         <div className={`flex items-center gap-1.5 ${status.badge} px-2.5 py-1 rounded-full text-label-sm font-bold`}>
           <span className={`w-2 h-2 rounded-full ${status.dot}`} />

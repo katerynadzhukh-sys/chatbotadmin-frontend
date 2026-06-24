@@ -7,11 +7,12 @@ export const widgets: Widget[] = [
     kbId: "jlu-public-2024",
     routing: "public",
     status: "active",
-    icon: "language",
+    icon: "Languages",
     accent: "primary",
     stats: { conversations: 1204, rating: 4.7 },
     config: {
       apiKey: "sk-jlu-7f3a9c2e1b4d8f6a",
+      model: "jlu/gpt-oss-20b",
       startPrompt:
         "Du bist der offizielle Assistent der JLU Gießen. Beantworte Fragen freundlich, sachlich und ausschließlich auf Basis der hinterlegten Wissensdatenbank.",
       templates: ["Was ist die JLU?", "Wie bewerbe ich mich?", "Semesterticket", "Öffnungszeiten"],
@@ -40,11 +41,12 @@ export const widgets: Widget[] = [
     kbId: "sales-internal-v2",
     routing: "internal",
     status: "paused",
-    icon: "analytics",
+    icon: "LineChart",
     accent: "secondary",
     stats: { conversations: 389, rating: 4.5 },
     config: {
       apiKey: "sk-sales-4d8e2f1a9c3b7e5d",
+      model: "jlu/gpt-oss-20b",
       startPrompt:
         "Du bist ein interner Assistent für das Vertriebsteam. Hilf bei Fragen zu Verkaufszahlen, Kundenkontakten und internen Prozessen.",
       templates: [],

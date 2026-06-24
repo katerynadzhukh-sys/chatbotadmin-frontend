@@ -16,6 +16,7 @@ export interface WidgetRule {
 
 export interface WidgetConfig {
   apiKey: string;
+  model: string;
   startPrompt: string;
   templates: string[];
   rules: WidgetRule[];

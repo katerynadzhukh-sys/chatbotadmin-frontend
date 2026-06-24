@@ -1,8 +1,9 @@
 import { useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
-import { ICON_OPTIONS, WidgetConfigView } from "../components/WidgetConfigView";
+import { WidgetConfigView } from "../components/WidgetConfigView";
+import { ICON_OPTIONS } from "../components/widgetOptions";
 import { createDefaultConfig, loadWidgets, saveWidgets } from "../data/widgetsStore";
-import type { Widget, WidgetAccent } from "../types/widget";
+import type { Widget, WidgetAccent, WidgetStatus } from "../types/widget";
 
 function slugify(name: string): string {
   return name
@@ -12,11 +13,22 @@ function slugify(name: string): string {
     .replace(/(^-|-$)/g, "") || "widget-id";
 }
 
+// Stellt sicher, dass die ID eindeutig ist: bei Kollision wird -2, -3, … angehängt.
+function makeUniqueId(base: string, existing: Widget[]): string {
+  const taken = new Set(existing.map((w) => w.id));
+  if (!taken.has(base)) return base;
+  let n = 2;
+  while (taken.has(`${base}-${n}`)) n++;
+  return `${base}-${n}`;
+}
+
+const WIDGET_BASE_URL = import.meta.env.VITE_WIDGET_BASE_URL || "https://ki-chat.uni-giessen.de";
+
 function buildEmbedCode(widgetId: string, kbId: string, routing: string): string {
   return `<!-- ChatBot Widget -->
 <div id="chatbot-root"></div>
 <script
-  src="https://chat.uni-giessen.de/widget.js"
+  src="${WIDGET_BASE_URL}/widget.js"
   data-widget-id="${widgetId || "widget-id"}"
   data-kb="${kbId || "kb-id"}"
   data-routing="${routing || "public"}-widget"
@@ -26,7 +38,7 @@ function buildEmbedCode(widgetId: string, kbId: string, routing: string): string
 }
 
 function buildDirectUrl(widgetId: string): string {
-  return `https://chat.uni-giessen.de/w/${widgetId || "widget-id"}`;
+  return `${WIDGET_BASE_URL}/w/${widgetId || "widget-id"}`;
 }
 
 export function WidgetConfigPage() {
@@ -79,7 +91,7 @@ export function WidgetConfigPage() {
   const handleSave = () => {
     if (isNew) {
       if (!widget.name.trim() || !widget.kbId.trim()) return;
-      const newId = slugify(widget.name) || crypto.randomUUID().slice(0, 8);
+      const newId = makeUniqueId(slugify(widget.name), widgets);
       const newWidget: Widget = { ...widget, id: newId };
       const updated = [...widgets, newWidget];
       saveWidgets(updated);
@@ -115,7 +127,15 @@ export function WidgetConfigPage() {
       directUrl={buildDirectUrl(previewId)}
       onSave={handleSave}
       onCancel={() => navigate("/")}
-      onToggleStatus={() => update("status", widget.status === "active" ? "paused" : "active")}
+      onToggleStatus={() => {
+        const newStatus: WidgetStatus = widget.status === "active" ? "paused" : "active";
+        // Status sofort lokal anzeigen und persistieren (nur das Statusfeld,
+        // sonstige ungespeicherte Änderungen bleiben dem Speichern vorbehalten).
+        update("status", newStatus);
+        const updated = widgets.map((w) => (w.id === widget.id ? { ...w, status: newStatus } : w));
+        saveWidgets(updated);
+        setWidgets(updated);
+      }}
       onToggleShowApiKey={() => setShowApiKey((v) => !v)}
       onRegenerateApiKey={() => {
         updateConfig("apiKey", `sk-${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`);

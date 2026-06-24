@@ -1,26 +1,20 @@
+import { useEffect, useRef, useState } from "react";
 import { Icon } from "./Icon";
+import { Markdown } from "./Markdown";
+import { ModelCombobox } from "./ModelCombobox";
 import { Toggle } from "./Toggle";
-import type { Widget, WidgetAccent, WidgetPosition, WidgetRule } from "../types/widget";
+import { ICON_OPTIONS, POSITION_OPTIONS } from "./widgetOptions";
+import { WidgetIcon } from "./WidgetIcon";
+import { streamChatMessage, type ChatMessage } from "../data/chat";
+import type { Widget, WidgetPosition, WidgetRule } from "../types/widget";
 
-export const POSITION_OPTIONS: { value: WidgetPosition; label: string }[] = [
-  { value: "bottom-right", label: "Unten rechts" },
-  { value: "bottom-left", label: "Unten links" },
-  { value: "top-right", label: "Oben rechts" },
-  { value: "top-left", label: "Oben links" },
-];
-
-export const ICON_OPTIONS = [
-  "smart_toy",
-  "language",
-  "analytics",
-  "support_agent",
-  "forum",
-  "psychology",
-  "auto_awesome",
-  "headset_mic",
-  "translate",
-  "chat_bubble",
-];
+interface PreviewMessage {
+  role: "bot" | "user";
+  text: string;
+  feedback?: "up" | "down" | null;
+  /** UI-Hinweis (Fehler/leer) — wird NICHT als Gesprächsverlauf an das Modell gesendet. */
+  notice?: boolean;
+}
 
 const RATE_SLIDERS = [
   { id: "rate-minute",   label: "Anfragen pro Minute",     key: "rateLimitPerMinute"    as const, min: 1,  max: 60,   step: 1  },
@@ -63,6 +57,112 @@ export function WidgetConfigView({
   onUpdate,
   onUpdateConfig,
 }: WidgetConfigViewProps) {
+  const [previewMessages, setPreviewMessages] = useState<PreviewMessage[]>(() => [
+    { role: "bot", text: widget.config.greeting || "Hallo! Wie kann ich dir helfen?" },
+  ]);
+  const [previewDraft, setPreviewDraft] = useState("");
+  const [previewTyping, setPreviewTyping] = useState(false);
+
+  // Vorschau-Chat bei neuen Nachrichten / während des Streamens nach unten scrollen.
+  const messagesRef = useRef<HTMLDivElement>(null);
+  useEffect(() => {
+    const el = messagesRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [previewMessages, previewTyping]);
+
+  // System-Prompt aus Start-Prompt + aktiven Regeln zusammenbauen.
+  const buildSystemPrompt = (): string => {
+    const parts: string[] = [];
+    if (widget.config.startPrompt.trim()) parts.push(widget.config.startPrompt.trim());
+
+    const activeRules = widget.config.rules
+      .filter((r) => r.enabled && r.text.trim())
+      .map((r) => `- ${r.text.trim()}`);
+    if (activeRules.length) parts.push(`Regeln:\n${activeRules.join("\n")}`);
+
+    return parts.join("\n\n");
+  };
+
+  const handlePreviewSend = async (text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed || previewTyping) return;
+
+    const model = widget.config.model.trim();
+    const history: PreviewMessage[] = [...previewMessages, { role: "user", text: trimmed }];
+    setPreviewMessages(history);
+    setPreviewDraft("");
+
+    if (!model) {
+      setPreviewMessages((msgs) => [
+        ...msgs,
+        { role: "bot", text: "⚠️ Bitte zuerst ein Sprachmodell auswählen.", notice: true },
+      ]);
+      return;
+    }
+
+    setPreviewTyping(true);
+
+    // Beim ersten Token die Schreib-Animation durch eine echte Bot-Bubble ersetzen,
+    // danach diese Bubble Token für Token verlängern. Der Updater muss rein sein
+    // (StrictMode ruft ihn doppelt auf), daher leiten wir alles aus `msgs` ab.
+    const appendToken = (chunk: string) => {
+      setPreviewTyping(false);
+      setPreviewMessages((msgs) => {
+        const last = msgs[msgs.length - 1];
+        if (last?.role === "bot") {
+          const copy = [...msgs];
+          copy[copy.length - 1] = { ...last, text: last.text + chunk };
+          return copy;
+        }
+        return [...msgs, { role: "bot", text: chunk, feedback: null }];
+      });
+    };
+
+    try {
+      const messages: ChatMessage[] = [];
+      const system = buildSystemPrompt();
+      if (system) messages.push({ role: "system", content: system });
+      // UI-Hinweise (Fehler/leer) gehören nicht in den Gesprächsverlauf.
+      for (const m of history) {
+        if (m.notice) continue;
+        messages.push({ role: m.role === "user" ? "user" : "assistant", content: m.text });
+      }
+
+      const { reply, finishReason } = await streamChatMessage(
+        { model, messages, maxTokens: widget.config.maxTokensPerAnswer },
+        appendToken,
+      );
+
+      // Kein Inhalt gestreamt (z. B. Token-Limit bei Reasoning-Modellen).
+      if (!reply.trim()) {
+        const text =
+          finishReason === "length"
+            ? "⚠️ Token-Limit erreicht, bevor eine Antwort generiert wurde. Erhöhe „Max. Tokens pro Antwort“."
+            : "(leere Antwort)";
+        setPreviewMessages((msgs) => [...msgs, { role: "bot", text, notice: true }]);
+      }
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "Unbekannter Fehler";
+      setPreviewMessages((msgs) => [...msgs, { role: "bot", text: `⚠️ ${message}`, notice: true }]);
+    } finally {
+      setPreviewTyping(false);
+    }
+  };
+
+  const handlePreviewReset = () => {
+    setPreviewMessages([
+      { role: "bot", text: widget.config.greeting || "Hallo! Wie kann ich dir helfen?" },
+    ]);
+    setPreviewDraft("");
+    setPreviewTyping(false);
+  };
+
+  const handlePreviewFeedback = (index: number, value: "up" | "down") => {
+    setPreviewMessages((msgs) =>
+      msgs.map((m, i) => (i === index ? { ...m, feedback: m.feedback === value ? null : value } : m)),
+    );
+  };
+
   return (
     <main className="flex-grow max-w-container-max mx-auto w-full">
 
@@ -197,46 +297,6 @@ export function WidgetConfigView({
                 </div>
               </div>
 
-              <div className="flex flex-col gap-2">
-                <label className="font-label-sm text-on-surface-variant">Icon</label>
-                <div className="flex flex-wrap gap-2">
-                  {ICON_OPTIONS.map((iconName) => (
-                    <button
-                      key={iconName}
-                      type="button"
-                      onClick={() => onUpdate("icon", iconName)}
-                      className={`w-11 h-11 flex items-center justify-center rounded-xl border-2 transition-colors ${
-                        widget.icon === iconName
-                          ? "border-primary bg-primary/10 text-primary"
-                          : "border-outline-variant text-on-surface-variant hover:border-primary/50 hover:text-primary"
-                      }`}
-                    >
-                      <Icon name={iconName} />
-                    </button>
-                  ))}
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="font-label-sm text-on-surface-variant">Akzentfarbe</label>
-                <div className="flex gap-3">
-                  {(["primary", "secondary"] as WidgetAccent[]).map((acc) => (
-                    <button
-                      key={acc}
-                      type="button"
-                      onClick={() => onUpdate("accent", acc)}
-                      className={`flex items-center gap-2 px-4 py-2 rounded-lg border-2 transition-colors text-sm ${
-                        widget.accent === acc
-                          ? "border-primary bg-primary/10 text-primary font-semibold"
-                          : "border-outline-variant text-on-surface-variant hover:border-primary/50"
-                      }`}
-                    >
-                      <span className={`w-3 h-3 rounded-full ${acc === "primary" ? "bg-primary" : "bg-secondary"}`} />
-                      {acc === "primary" ? "Primär" : "Sekundär"}
-                    </button>
-                  ))}
-                </div>
-              </div>
             </section>
           )}
 
@@ -246,6 +306,22 @@ export function WidgetConfigView({
               <Icon name="forum" className="text-primary" />
               Gesprächseinstellungen
             </h3>
+
+            <div className="flex flex-col gap-1">
+              <label className="font-label-sm text-on-surface-variant" htmlFor="widget-model">
+                Sprachmodell
+              </label>
+              <ModelCombobox
+                id="widget-model"
+                value={widget.config.model}
+                onChange={(v) => onUpdateConfig("model", v)}
+                placeholder="Modell auswählen…"
+                className="w-full px-4 py-2 pr-9 bg-surface border border-outline-variant rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
+              />
+              <p className="text-xs text-on-surface-variant">
+                Wird für die Antwortgenerierung verwendet (siehe Vorschau).
+              </p>
+            </div>
 
             <div className="flex flex-col gap-1">
               <label className="font-label-sm text-on-surface-variant" htmlFor="start-prompt">
@@ -383,36 +459,6 @@ export function WidgetConfigView({
                   ))}
                 </div>
               )}
-            </div>
-
-            <div className="grid grid-cols-1 sm:grid-cols-2 gap-stack-sm">
-              <div className="flex flex-col gap-1">
-                <label className="font-label-sm text-on-surface-variant" htmlFor="min-depth">
-                  Gesprächstiefe (min.)
-                </label>
-                <input
-                  id="min-depth"
-                  type="number"
-                  min={1}
-                  max={widget.config.maxDialogDepth}
-                  value={widget.config.minDialogDepth}
-                  onChange={(e) => onUpdateConfig("minDialogDepth", Number(e.target.value))}
-                  className="w-full px-4 py-2 bg-surface border border-outline-variant rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
-                />
-              </div>
-              <div className="flex flex-col gap-1">
-                <label className="font-label-sm text-on-surface-variant" htmlFor="max-depth">
-                  Gesprächstiefe (max.)
-                </label>
-                <input
-                  id="max-depth"
-                  type="number"
-                  min={widget.config.minDialogDepth}
-                  value={widget.config.maxDialogDepth}
-                  onChange={(e) => onUpdateConfig("maxDialogDepth", Number(e.target.value))}
-                  className="w-full px-4 py-2 bg-surface border border-outline-variant rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
-                />
-              </div>
             </div>
 
             <div className="divide-y divide-outline-variant/30">
@@ -592,6 +638,26 @@ export function WidgetConfigView({
                 </select>
               </div>
             </div>
+
+            <div className="flex flex-col gap-2">
+              <label className="font-label-sm text-on-surface-variant">Icon</label>
+              <div className="flex flex-wrap gap-2">
+                {ICON_OPTIONS.map((iconName) => (
+                  <button
+                    key={iconName}
+                    type="button"
+                    onClick={() => onUpdate("icon", iconName)}
+                    className={`w-11 h-11 flex items-center justify-center rounded-xl border-2 transition-colors ${
+                      widget.icon === iconName
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-outline-variant text-on-surface-variant hover:border-primary/50 hover:text-primary"
+                    }`}
+                  >
+                    <WidgetIcon name={iconName} size={22} />
+                  </button>
+                ))}
+              </div>
+            </div>
           </section>
 
           {/* Verbindung — edit mode only */}
@@ -648,14 +714,24 @@ export function WidgetConfigView({
 
           {/* Vorschau */}
           <section className="bg-surface-container-lowest border border-outline-variant rounded-xl p-6 space-y-stack-sm">
-            <h3 className="font-headline-md text-base font-bold flex items-center gap-2">
-              <Icon name="visibility" className="text-primary" />
-              Vorschau
-            </h3>
+            <div className="flex items-center justify-between">
+              <h3 className="font-headline-md text-base font-bold flex items-center gap-2">
+                <Icon name="visibility" className="text-primary" />
+                Vorschau
+              </h3>
+              <button
+                type="button"
+                onClick={handlePreviewReset}
+                className="flex items-center gap-1 text-xs text-on-surface-variant hover:text-primary transition-colors"
+              >
+                <Icon name="refresh" className="text-[14px]" />
+                Zurücksetzen
+              </button>
+            </div>
 
-            <div className="relative h-56 rounded-lg border border-outline-variant bg-surface overflow-hidden">
+            <div className="relative h-[420px] rounded-lg border border-outline-variant bg-surface overflow-hidden">
               <div
-                className={`absolute w-56 bg-surface-container-lowest border border-outline-variant rounded-xl shadow-lg overflow-hidden ${
+                className={`absolute w-72 h-96 bg-surface-container-lowest border border-outline-variant rounded-xl shadow-lg overflow-hidden flex flex-col ${
                   widget.config.position === "bottom-right" ? "bottom-3 right-3"
                   : widget.config.position === "bottom-left" ? "bottom-3 left-3"
                   : widget.config.position === "top-right"   ? "top-3 right-3"
@@ -663,29 +739,101 @@ export function WidgetConfigView({
                 }`}
               >
                 <div
-                  className="flex items-center gap-2 px-3 py-2 text-sm font-semibold text-white"
+                  className="flex items-center gap-2 px-3 py-2 text-sm font-semibold text-white shrink-0"
                   style={{ backgroundColor: widget.config.accentColor }}
                 >
-                  <Icon name={widget.icon || "smart_toy"} className="text-[18px]" />
+                  <WidgetIcon name={widget.icon || "Bot"} size={18} />
                   <span className="truncate">{widget.config.title || "ChatBot"}</span>
                 </div>
-                <div className="p-3 space-y-2">
-                  <div className="bg-surface-container-low rounded-lg px-3 py-2 text-xs text-on-surface">
-                    {widget.config.greeting || "Hallo! Wie kann ich dir helfen?"}
-                  </div>
-                  {widget.config.templates.filter(Boolean).length > 0 && (
-                    <div className="flex flex-wrap gap-1">
+
+                <div ref={messagesRef} className="flex-1 overflow-y-auto p-3 space-y-2">
+                  {previewMessages.map((msg, i) => (
+                    <div key={i} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
+                      <div
+                        className={`max-w-[85%] rounded-lg px-3 py-2 text-xs ${
+                          msg.role === "user" ? "text-white" : "bg-surface-container-low text-on-surface"
+                        }`}
+                        style={msg.role === "user" ? { backgroundColor: widget.config.accentColor } : undefined}
+                      >
+                        {msg.role === "bot" && !msg.notice ? <Markdown>{msg.text}</Markdown> : msg.text}
+                      </div>
+                      {msg.role === "bot" && i > 0 && !msg.notice && widget.config.feedbackButtons && (
+                        <div className="flex items-center gap-1 mt-1">
+                          <button
+                            type="button"
+                            onClick={() => handlePreviewFeedback(i, "up")}
+                            aria-label="Hilfreich"
+                            className={`p-0.5 rounded transition-colors ${
+                              msg.feedback === "up" ? "text-primary" : "text-on-surface-variant/50 hover:text-primary"
+                            }`}
+                          >
+                            <Icon name="thumb_up" className="text-[14px]" />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => handlePreviewFeedback(i, "down")}
+                            aria-label="Nicht hilfreich"
+                            className={`p-0.5 rounded transition-colors ${
+                              msg.feedback === "down" ? "text-error" : "text-on-surface-variant/50 hover:text-error"
+                            }`}
+                          >
+                            <Icon name="thumb_down" className="text-[14px]" />
+                          </button>
+                        </div>
+                      )}
+                    </div>
+                  ))}
+
+                  {previewTyping && (
+                    <div className="flex items-start">
+                      <div className="bg-surface-container-low rounded-lg px-3 py-2.5 flex items-center gap-1">
+                        <span className="w-1.5 h-1.5 rounded-full bg-on-surface-variant/50 animate-bounce [animation-delay:-0.3s]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-on-surface-variant/50 animate-bounce [animation-delay:-0.15s]" />
+                        <span className="w-1.5 h-1.5 rounded-full bg-on-surface-variant/50 animate-bounce" />
+                      </div>
+                    </div>
+                  )}
+
+                  {previewMessages.length === 1 && widget.config.templates.filter(Boolean).length > 0 && (
+                    <div className="flex flex-wrap gap-1 pt-1">
                       {widget.config.templates.filter(Boolean).map((tpl, i) => (
-                        <span
+                        <button
                           key={i}
-                          className="px-2 py-0.5 rounded-full border text-[10px] font-medium cursor-pointer transition-colors"
+                          type="button"
+                          onClick={() => handlePreviewSend(tpl)}
+                          className="px-2 py-0.5 rounded-full border text-[10px] font-medium cursor-pointer transition-colors hover:bg-surface-container-low"
                           style={{ borderColor: widget.config.accentColor, color: widget.config.accentColor }}
                         >
                           {tpl}
-                        </span>
+                        </button>
                       ))}
                     </div>
                   )}
+                </div>
+
+                <div className="flex items-center gap-1 p-2 border-t border-outline-variant shrink-0">
+                  <input
+                    value={previewDraft}
+                    onChange={(e) => setPreviewDraft(e.target.value)}
+                    onKeyDown={(e) => {
+                      if (e.key === "Enter") {
+                        e.preventDefault();
+                        handlePreviewSend(previewDraft);
+                      }
+                    }}
+                    placeholder="Nachricht eingeben…"
+                    className="flex-1 px-3 py-1.5 bg-surface border border-outline-variant rounded-full text-xs outline-none focus:ring-2 focus:ring-primary min-w-0"
+                  />
+                  <button
+                    type="button"
+                    onClick={() => handlePreviewSend(previewDraft)}
+                    disabled={!previewDraft.trim() || previewTyping}
+                    aria-label="Senden"
+                    className="p-2 rounded-full text-white disabled:opacity-40 transition-opacity shrink-0"
+                    style={{ backgroundColor: widget.config.accentColor }}
+                  >
+                    <Icon name="send" className="text-[16px]" />
+                  </button>
                 </div>
               </div>
             </div>

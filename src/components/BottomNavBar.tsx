@@ -24,7 +24,7 @@ export function BottomNavBar() {
               : "flex flex-col items-center gap-1 text-on-surface-variant hover:text-primary transition-colors"
           }
         >
-          <Icon name={item.icon} style={item.active ? { fontVariationSettings: "'FILL' 1" } : undefined} />
+          <Icon name={item.icon} />
           <span className="font-label-sm text-[10px]">{item.label}</span>
         </button>
       ))}
