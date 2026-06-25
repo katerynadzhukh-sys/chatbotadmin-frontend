@@ -274,9 +274,162 @@
       margin: 0;
       padding: 0;
     }
+
+    /* Auth Overlay */
+    #auth-overlay {
+      position: fixed;
+      inset: 0;
+      z-index: 999999;
+      background: rgba(15, 23, 42, 0.88);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 24px;
+    }
+
+    .auth-card {
+      background: #ffffff;
+      border-radius: 16px;
+      padding: 40px 32px;
+      width: 100%;
+      max-width: 400px;
+      box-shadow: 0 25px 50px rgba(0, 0, 0, 0.35);
+    }
+
+    .auth-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 12px;
+      color: #64748b;
+      background: #f1f5f9;
+      border-radius: 6px;
+      padding: 4px 10px;
+      margin-bottom: 20px;
+    }
+
+    .auth-card h2 {
+      font-size: 22px;
+      font-weight: 700;
+      color: var(--primary-color);
+      margin-bottom: 4px;
+    }
+
+    .auth-subtitle {
+      font-size: 13px;
+      color: #64748b;
+      margin-bottom: 24px;
+    }
+
+    .auth-field {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      margin-bottom: 14px;
+    }
+
+    .auth-field label {
+      font-size: 13px;
+      font-weight: 500;
+      color: #64748b;
+    }
+
+    .auth-field input {
+      padding: 10px 14px;
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      outline: none;
+      font-size: 14px;
+      transition: border-color 0.2s;
+    }
+
+    .auth-field input:focus {
+      border-color: var(--primary-color);
+    }
+
+    .auth-field input.input-error {
+      border-color: #ef4444;
+    }
+
+    .auth-error-msg {
+      font-size: 12px;
+      color: #ef4444;
+    }
+
+    .auth-btn {
+      width: 100%;
+      background-color: var(--primary-color);
+      color: white;
+      border: none;
+      padding: 12px;
+      border-radius: 8px;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      margin-top: 8px;
+      transition: background-color 0.2s;
+    }
+
+    .auth-btn:hover {
+      background-color: #0043d0;
+    }
+
+    /* Logout button in control panel */
+    .btn-logout {
+      width: 100%;
+      background: none;
+      border: 1px solid var(--border-color);
+      color: #64748b;
+      padding: 8px;
+      border-radius: 6px;
+      font-size: 12px;
+      font-weight: 500;
+      cursor: pointer;
+      margin-top: 8px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 5px;
+      transition: border-color 0.2s, color 0.2s;
+    }
+
+    .btn-logout:hover {
+      border-color: #ef4444;
+      color: #ef4444;
+    }
   </style>
 </head>
 <body>
+
+  <!-- Auth Overlay -->
+  <div id="auth-overlay">
+    <div class="auth-card">
+      <div class="auth-badge">
+        <span class="material-symbols-outlined" style="font-size:15px">lock</span>
+        ChatBot Admin – Testumgebung
+      </div>
+      <h2>Anmeldung erforderlich</h2>
+      <p class="auth-subtitle">Nur für autorisierte Tester. Melden Sie sich mit Ihren Admin-Zugangsdaten an.</p>
+      <form id="auth-form" novalidate>
+        <div class="auth-field">
+          <label for="auth-email">E-Mail</label>
+          <input type="email" id="auth-email" placeholder="name@beispiel.de" required autocomplete="email">
+        </div>
+        <div class="auth-field">
+          <label for="auth-password">Passwort</label>
+          <input type="password" id="auth-password" placeholder="••••••••" required autocomplete="current-password">
+          <span class="auth-error-msg" id="auth-pw-error" style="display:none"></span>
+        </div>
+        <button type="submit" class="auth-btn">Anmelden</button>
+      </form>
+    </div>
+  </div>
+  <script>
+    // Hide overlay immediately if already authenticated (avoids flash on same-origin reload)
+    if (localStorage.getItem('chatbotadmin.rememberMe') === 'true') {
+      document.getElementById('auth-overlay').style.display = 'none';
+    }
+  </script>
 
   <!-- Floating Test Control Panel -->
   <div class="test-controls-panel">
@@ -321,6 +474,10 @@
     <button class="btn-reload" id="btn-reload-widget">
       <span class="material-symbols-outlined">refresh</span>
       Widget neu laden
+    </button>
+    <button class="btn-logout" id="btn-logout">
+      <span class="material-symbols-outlined" style="font-size:15px">logout</span>
+      Abmelden
     </button>
   </div>
 
@@ -385,6 +542,57 @@
 
   <!-- Script for dynamic Widget loading -->
   <script>
+    const AUTH_KEY = 'chatbotadmin.rememberMe';
+    const authOverlay = document.getElementById('auth-overlay');
+    const authForm = document.getElementById('auth-form');
+    const authPwInput = document.getElementById('auth-password');
+    const authPwError = document.getElementById('auth-pw-error');
+    const btnLogout = document.getElementById('btn-logout');
+
+    function getPasswordError(pw) {
+      if (pw.length < 8) return 'Das Passwort muss mindestens 8 Zeichen lang sein.';
+      if (!/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) return 'Das Passwort muss Buchstaben und Zahlen enthalten.';
+      return null;
+    }
+
+    authForm.addEventListener('submit', (e) => {
+      e.preventDefault();
+      const error = getPasswordError(authPwInput.value);
+      if (error) {
+        authPwError.textContent = error;
+        authPwError.style.display = 'block';
+        authPwInput.classList.add('input-error');
+        return;
+      }
+      authPwError.style.display = 'none';
+      authPwInput.classList.remove('input-error');
+      localStorage.setItem(AUTH_KEY, 'true');
+      authOverlay.style.display = 'none';
+      loadWidget();
+    });
+
+    authPwInput.addEventListener('input', () => {
+      if (authPwError.style.display !== 'none') {
+        const error = getPasswordError(authPwInput.value);
+        if (error) {
+          authPwError.textContent = error;
+        } else {
+          authPwError.style.display = 'none';
+          authPwInput.classList.remove('input-error');
+        }
+      }
+    });
+
+    btnLogout.addEventListener('click', () => {
+      localStorage.removeItem(AUTH_KEY);
+      const existingScript = document.getElementById('dynamically-loaded-widget-script');
+      if (existingScript) existingScript.remove();
+      const existingWrapper = document.querySelector('.chatbot-widget-wrapper');
+      if (existingWrapper) existingWrapper.remove();
+      document.getElementById('chatbot-root').innerHTML = '';
+      authOverlay.style.display = 'flex';
+    });
+
     const serverOriginInput = document.getElementById('server-origin');
     const widgetIdSelect = document.getElementById('widget-id');
     const customWidgetIdGroup = document.getElementById('custom-widget-id-group');
@@ -404,6 +612,8 @@
 
     // Function to reload widget script dynamically
     function loadWidget() {
+      if (localStorage.getItem(AUTH_KEY) !== 'true') return;
+
       // 1. Remove existing script and widget UI elements if any
       const existingScript = document.getElementById('dynamically-loaded-widget-script');
       if (existingScript) {
@@ -452,9 +662,24 @@
       document.body.appendChild(script);
     }
 
-    // Set default server origin based on current host if matching, or keep localhost:8080
-    if (window.location.hostname === 'localhost' && window.location.port !== '8082') {
-      serverOriginInput.value = `http://localhost:${window.location.port}`;
+    // Auto-detect admin panel origin
+    function isLocalAddress(h) {
+      return h === 'localhost' || h === '127.0.0.1' || h === '::1';
+    }
+
+    if (window.location.port === '8082') {
+      // Served from the widget-test-site container — admin panel is on the same host
+      serverOriginInput.value = isLocalAddress(window.location.hostname)
+        ? `http://${window.location.hostname}:8081`
+        : `https://${window.location.hostname}`;
+    } else if (!isLocalAddress(window.location.hostname)) {
+      // Served from the admin container itself (e.g. /test-widget/ on staging)
+      serverOriginInput.value = window.location.origin;
+    } else {
+      // Local dev (loopback, non-8082): always HTTP regardless of browser-reported protocol
+      serverOriginInput.value = window.location.port
+        ? `http://${window.location.hostname}:${window.location.port}`
+        : `http://${window.location.hostname}:8081`;
     }
 
     // Bind event

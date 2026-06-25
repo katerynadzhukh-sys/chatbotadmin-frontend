@@ -4,15 +4,13 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        - http_proxy=http://10.60.3.254:3128
-        - https_proxy=http://10.60.3.254:3128
-        - no_proxy=localhost,127.0.0.1
     container_name: chatbotadmin-frontend-local
     ports:
       - "8081:80"             # Alternate port for local builds to avoid conflicts
-    environment:
-      - HTTP_PROXY=http://10.60.3.254:3128
-      - HTTPS_PROXY=http://10.60.3.254:3128
-      - NO_PROXY=localhost,127.0.0.1
+
+  # Override widget-test-site for local dev: run nginx as root to avoid bind-mount permission issues on macOS
+  widget-test-site:
+    volumes:
+      - ./widget-test:/usr/share/nginx/html:ro
+      - ./widget-test-nginx.conf:/etc/nginx/nginx.conf:ro
 
