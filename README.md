@@ -1,73 +1,72 @@
-# React + TypeScript + Vite
+# Chatbot Admin Frontend
 
-This template provides a minimal setup to get React working in Vite with HMR and some ESLint rules.
+This repository contains the administration dashboard and widget loader for the chatbot system at Justus Liebig University Gießen (JLU Gießen).
 
-Currently, two official plugins are available:
+---
 
-- [@vitejs/plugin-react](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react) uses [Oxc](https://oxc.rs)
-- [@vitejs/plugin-react-swc](https://github.com/vitejs/vite-plugin-react/blob/main/packages/plugin-react-swc) uses [SWC](https://swc.rs/)
+## What is this repo?
 
-## React Compiler
+This is a Single Page Application (SPA) that serves two primary purposes:
+1. **Admin Panel:** A dashboard to configure, manage, and monitor chatbot widgets.
+2. **Widget Hosting:** Serves the embedded floating chatbot widget loader (`widget.js`) to external portals (like the JLU Gießen website).
 
-The React Compiler is not enabled on this template because of its impact on dev & build performances. To add it, see [this documentation](https://react.dev/learn/react-compiler/installation).
+---
 
-## Expanding the ESLint configuration
+## Tech Stack
 
-If you are developing a production application, we recommend updating the configuration to enable type-aware lint rules:
+* **Frontend Framework:** React 19 (with TypeScript)
+* **Build Tool & Server:** Vite 8 (using a dev-only proxy to securely communicate with the JLU OpenAI-compatible API endpoint)
+* **Styling & Components:** Tailwind CSS v4 and Lucide React icons
+* **Routing:** React Router DOM v7
+* **Authentication:** Keycloak Integration (OIDC Authorization Code flow with PKCE via `react-oidc-context` and `oidc-client-ts`)
+* **Production Web Server:** Nginx (alpine-based container for SPA hosting and SSL termination)
+* **Containerization:** Docker & Docker Compose (supporting a dual-container local development/test setup)
 
-```js
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
+---
 
-      // Remove tseslint.configs.recommended and replace with this
-      tseslint.configs.recommendedTypeChecked,
-      // Alternatively, use this for stricter rules
-      tseslint.configs.strictTypeChecked,
-      // Optionally, add this for stylistic rules
-      tseslint.configs.stylisticTypeChecked,
+## Project Structure
 
-      // Other configs...
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
+```text
+├── docs/                      # Technical guides & documentation
+│   ├── AUTHENTICATION.md      # Detailed Keycloak OIDC authentication setup
+│   └── DEPLOYMENT.md          # Local testing and staging deployment instructions
+├── src/                       # Main application codebase (React/TypeScript)
+│   ├── auth/                  # OIDC providers, hooks, and role mappings
+│   ├── components/            # Reusable UI components
+│   ├── hooks/                 # Custom React hooks (e.g. useCurrentUser)
+│   ├── pages/                 # Routing endpoints (Dashboard, Config, callback page)
+│   └── types/                 # TypeScript type definitions
+├── widget-test/               # Mock JLU portal for embedding & testing the widget locally
+├── Dockerfile                 # Multi-stage production build configuration
+├── docker-compose.yml         # Staging/Production service definition
+├── docker-compose.override.yml# Local development service override
+└── vite.config.ts             # Vite build pipeline and custom API/KI proxy setup
 ```
 
-You can also install [eslint-plugin-react-x](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-x) and [eslint-plugin-react-dom](https://github.com/Rel1cx/eslint-react/tree/main/packages/plugins/eslint-plugin-react-dom) for React-specific lint rules:
+---
 
-```js
-// eslint.config.js
-import reactX from 'eslint-plugin-react-x'
-import reactDom from 'eslint-plugin-react-dom'
+## Detailed Documentation
 
-export default defineConfig([
-  globalIgnores(['dist']),
-  {
-    files: ['**/*.{ts,tsx}'],
-    extends: [
-      // Other configs...
-      // Enable lint rules for React
-      reactX.configs['recommended-typescript'],
-      // Enable lint rules for React DOM
-      reactDom.configs.recommended,
-    ],
-    languageOptions: {
-      parserOptions: {
-        project: ['./tsconfig.node.json', './tsconfig.app.json'],
-        tsconfigRootDir: import.meta.dirname,
-      },
-      // other options...
-    },
-  },
-])
-```
+For deeper configurations, check the following guides:
+* 🔐 **[Authentication Guide](docs/AUTHENTICATION.md)** - Details on authentication architecture, Keycloak setup, token storage, and roles.
+* 🚀 **[Deployment & Testing Guide](docs/DEPLOYMENT.md)** - Instructions on running local test environments, deploying to staging, and SSL/CORS setup.
+
+---
+
+## Local Development
+
+1. **Setup Environment:**
+   ```bash
+   cp .env.example .env.local
+   ```
+2. **Install Dependencies & Start Dev Server:**
+   ```bash
+   npm install
+   npm run dev
+   ```
+3. **Start Local Test Stack (with Mock JLU Portal):**
+   ```bash
+   docker compose up local-frontend widget-test-site -d --build
+   ```
+   * **Admin UI:** [http://localhost:8081](http://localhost:8081)
+   * **Mock Portal:** [http://localhost:8082](http://localhost:8082)
