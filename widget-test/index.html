@@ -412,21 +412,23 @@
       <p class="auth-subtitle">Nur für autorisierte Tester. Melden Sie sich mit Ihren Admin-Zugangsdaten an.</p>
       <form id="auth-form" novalidate>
         <div class="auth-field">
-          <label for="auth-email">E-Mail</label>
-          <input type="email" id="auth-email" placeholder="name@beispiel.de" required autocomplete="email">
+          <label for="auth-username">Benutzername</label>
+          <input type="text" id="auth-username" placeholder="admin" required autocomplete="username">
         </div>
         <div class="auth-field">
           <label for="auth-password">Passwort</label>
           <input type="password" id="auth-password" placeholder="••••••••" required autocomplete="current-password">
-          <span class="auth-error-msg" id="auth-pw-error" style="display:none"></span>
         </div>
-        <button type="submit" class="auth-btn">Anmelden</button>
+        <span class="auth-error-msg" id="auth-error" style="display:none"></span>
+        <button type="submit" class="auth-btn" id="auth-submit">Anmelden</button>
       </form>
     </div>
   </div>
   <script>
-    // Hide overlay immediately if already authenticated (avoids flash on same-origin reload)
-    if (localStorage.getItem('chatbotadmin.rememberMe') === 'true') {
+    // Hide overlay immediately if a backend session token is already stored
+    // (avoids a flash on reload). The token is validated by the backend on the
+    // next /api call; logout clears it.
+    if (localStorage.getItem('chatbotadmin.token')) {
       document.getElementById('auth-overlay').style.display = 'none';
     }
   </script>
@@ -440,7 +442,7 @@
     
     <div class="control-group">
       <label for="server-origin">Widget Server Origin</label>
-      <input type="text" id="server-origin" value="http://localhost:8081" placeholder="z.B. http://localhost:8081">
+      <input type="text" id="server-origin" value="http://localhost:5173" placeholder="z.B. http://localhost:5173">
     </div>
 
     <div class="control-group">
@@ -542,49 +544,89 @@
 
   <!-- Script for dynamic Widget loading -->
   <script>
-    const AUTH_KEY = 'chatbotadmin.rememberMe';
+    // Real authentication against the Go backend — the same POST /api/auth/login
+    // the Admin UI uses. The request goes to the configured Widget Server Origin
+    // (local dev: the Vite admin on :5173), which proxies /api to the backend.
+    // No client-side password rules: the backend is the source of truth.
+    const TOKEN_KEY = 'chatbotadmin.token';
+    const USER_KEY = 'chatbotadmin.user';
     const authOverlay = document.getElementById('auth-overlay');
     const authForm = document.getElementById('auth-form');
+    const authUserInput = document.getElementById('auth-username');
     const authPwInput = document.getElementById('auth-password');
-    const authPwError = document.getElementById('auth-pw-error');
+    const authError = document.getElementById('auth-error');
+    const authSubmit = document.getElementById('auth-submit');
     const btnLogout = document.getElementById('btn-logout');
 
-    function getPasswordError(pw) {
-      if (pw.length < 8) return 'Das Passwort muss mindestens 8 Zeichen lang sein.';
-      if (!/[A-Za-z]/.test(pw) || !/[0-9]/.test(pw)) return 'Das Passwort muss Buchstaben und Zahlen enthalten.';
-      return null;
+    function getServerOrigin() {
+      return (document.getElementById('server-origin').value || 'http://localhost:5173').replace(/\/+$/, '');
     }
 
-    authForm.addEventListener('submit', (e) => {
+    function showAuthError(msg) {
+      authError.textContent = msg;
+      authError.style.display = 'block';
+      authPwInput.classList.add('input-error');
+    }
+
+    authForm.addEventListener('submit', async (e) => {
       e.preventDefault();
-      const error = getPasswordError(authPwInput.value);
-      if (error) {
-        authPwError.textContent = error;
-        authPwError.style.display = 'block';
-        authPwInput.classList.add('input-error');
+      authError.style.display = 'none';
+      authPwInput.classList.remove('input-error');
+
+      const username = authUserInput.value.trim();
+      const password = authPwInput.value;
+      if (!username || !password) {
+        showAuthError('Bitte Benutzername und Passwort eingeben.');
         return;
       }
-      authPwError.style.display = 'none';
-      authPwInput.classList.remove('input-error');
-      localStorage.setItem(AUTH_KEY, 'true');
-      authOverlay.style.display = 'none';
-      loadWidget();
-    });
 
-    authPwInput.addEventListener('input', () => {
-      if (authPwError.style.display !== 'none') {
-        const error = getPasswordError(authPwInput.value);
-        if (error) {
-          authPwError.textContent = error;
-        } else {
-          authPwError.style.display = 'none';
-          authPwInput.classList.remove('input-error');
+      authSubmit.disabled = true;
+      const label = authSubmit.textContent;
+      authSubmit.textContent = 'Anmeldung…';
+      try {
+        const res = await fetch(getServerOrigin() + '/api/auth/login', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ username, password }),
+        });
+        if (!res.ok) {
+          let msg = res.status === 401 ? 'Ungültiger Benutzername oder Passwort.' : 'Anmeldung fehlgeschlagen.';
+          try { const b = await res.json(); if (b && b.error) msg = b.error; } catch (_) {}
+          showAuthError(msg);
+          return;
         }
+        const data = await res.json();
+        localStorage.setItem(TOKEN_KEY, data.token);
+        localStorage.setItem(USER_KEY, JSON.stringify(data.user));
+        authOverlay.style.display = 'none';
+        loadWidget();
+      } catch (_) {
+        showAuthError('Backend nicht erreichbar — läuft der Server unter ' + getServerOrigin() + '?');
+      } finally {
+        authSubmit.disabled = false;
+        authSubmit.textContent = label;
       }
     });
 
-    btnLogout.addEventListener('click', () => {
-      localStorage.removeItem(AUTH_KEY);
+    // Clear the error as soon as the user edits a field.
+    [authUserInput, authPwInput].forEach((el) => el.addEventListener('input', () => {
+      authError.style.display = 'none';
+      authPwInput.classList.remove('input-error');
+    }));
+
+    btnLogout.addEventListener('click', async () => {
+      const token = localStorage.getItem(TOKEN_KEY);
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(USER_KEY);
+      // Best-effort server-side token revocation (blacklist).
+      if (token) {
+        try {
+          await fetch(getServerOrigin() + '/api/auth/logout', {
+            method: 'POST',
+            headers: { Authorization: 'Bearer ' + token },
+          });
+        } catch (_) {}
+      }
       const existingScript = document.getElementById('dynamically-loaded-widget-script');
       if (existingScript) existingScript.remove();
       const existingWrapper = document.querySelector('.chatbot-widget-wrapper');
@@ -668,9 +710,11 @@
     }
 
     if (window.location.port === '8082') {
-      // Served from the widget-test-site container — admin panel is on the same host
+      // Served from the widget-test-site container (the cross-origin portal).
+      // Locally the admin is the Vite dev server (:5173); on a server it's the
+      // same host on the standard HTTPS port.
       serverOriginInput.value = isLocalAddress(window.location.hostname)
-        ? `http://${window.location.hostname}:8081`
+        ? `http://${window.location.hostname}:5173`
         : `https://${window.location.hostname}`;
     } else if (!isLocalAddress(window.location.hostname)) {
       // Served from the admin container itself (e.g. /test-widget/ on staging)
@@ -679,7 +723,7 @@
       // Local dev (loopback, non-8082): always HTTP regardless of browser-reported protocol
       serverOriginInput.value = window.location.port
         ? `http://${window.location.hostname}:${window.location.port}`
-        : `http://${window.location.hostname}:8081`;
+        : `http://${window.location.hostname}:5173`;
     }
 
     // Bind event

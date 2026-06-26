@@ -1,3 +1,5 @@
+import { apiFetch } from "../auth/api";
+
 export interface LanguageModel {
   id: string;
   ownedBy: string;
@@ -22,7 +24,7 @@ export async function fetchModels(force = false): Promise<LanguageModel[]> {
   if (inflight && !force) return inflight;
 
   inflight = (async () => {
-    const res = await fetch("/api/models");
+    const res = await apiFetch("/api/models");
     const data: ModelsResponse = await res.json().catch(() => ({}));
 
     if (!res.ok || data.error) {

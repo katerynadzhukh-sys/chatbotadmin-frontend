@@ -1,14 +1,7 @@
+# Local-only overrides (docker-compose.override.yml is auto-merged by
+# `docker compose` locally). Servers deploy with `-f docker-compose.yml` to skip it.
 services:
-  # Local Build & Run (Builds the image from local source code)
-  local-frontend:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: chatbotadmin-frontend-local
-    ports:
-      - "8081:80"             # Alternate port for local builds to avoid conflicts
-
-  # Override widget-test-site for local dev: run nginx as root to avoid bind-mount permission issues on macOS
+  # Run nginx as root to avoid bind-mount permission issues on macOS.
   widget-test-site:
     volumes:
       - ./widget-test:/usr/share/nginx/html:ro

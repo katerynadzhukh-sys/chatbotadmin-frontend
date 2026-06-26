@@ -1,7 +1,40 @@
+# Backend env shared by the migrate + backend services. The dev defaults make
+# the full local stack (frontend on :8081 + backend) work with NO .env; every
+# value is overridable via the repo-root .env or the shell for staging/prod.
+# NEVER rely on these defaults in production — set GO_ENV=production with real
+# secrets (start from .env.staging.example).
+x-backend-env: &backend-env
+  DATABASE_URL: postgres://chatbotadmin:${POSTGRES_PASSWORD:-chatbotadmin}@postgres:5432/chatbotadmin?sslmode=disable
+  REDIS_HOST: redis
+  GO_ENV: ${GO_ENV:-development}
+  JWT_SECRET: ${JWT_SECRET:-local-dev-secret-at-least-32-chars-long-xx}
+  AUTH_PROVIDER_SECRET_KEY: ${AUTH_PROVIDER_SECRET_KEY:-}
+  ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:-password}
+  # :8081 = the admin SPA; :8082 = the widget mock-portal, which posts its real
+  # login cross-origin to :8081/api.
+  ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:8081,http://localhost:8082}
+  KI_API_KEY: ${KI_API_KEY:-}
+  KI_BASE_URL: ${KI_BASE_URL:-https://api.hrz.uni-giessen.de/v1}
+  OIDC_PROVIDER_NAME: ${OIDC_PROVIDER_NAME:-}
+  OIDC_IDP: ${OIDC_IDP:-}
+  OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:-}
+  OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:-}
+  OIDC_LOGOUT_URI: ${OIDC_LOGOUT_URI:-}
+  OIDC_REDIRECT_URI: ${OIDC_REDIRECT_URI:-}
+  OIDC_SUCCESS_REDIRECT: ${OIDC_SUCCESS_REDIRECT:-}
+  OIDC_POST_LOGOUT_REDIRECT_URI: ${OIDC_POST_LOGOUT_REDIRECT_URI:-}
+  # Corporate proxy for reaching the IdP / HRZ from staging (empty locally).
+  HTTP_PROXY: ${BACKEND_HTTP_PROXY:-}
+  HTTPS_PROXY: ${BACKEND_HTTPS_PROXY:-}
+  NO_PROXY: ${BACKEND_NO_PROXY:-localhost,127.0.0.1,postgres,redis,backend}
+
 services:
   # Remote/Production Deployment (Pulls pre-built image from GitHub Container Registry)
   chatbotadmin-frontend:
-    image: ghcr.io/stenseegel/chatbotadmin-frontend:latest
+    # Staging runs the latest built image; Prod pins the prod-ready tag via
+    # FRONTEND_IMAGE_TAG in .env (e.g. FRONTEND_IMAGE_TAG=prod).
+    image: ghcr.io/stenseegel/chatbotadmin-frontend:${FRONTEND_IMAGE_TAG:-latest}
     container_name: chatbotadmin-frontend
     ports:
       - "443:443"             # Maps host port 443 to container HTTPS port 443
@@ -12,6 +45,8 @@ services:
       - ./nginx.staging.conf:/etc/nginx/conf.d/default.conf:ro
     restart: always
     pull_policy: always
+    depends_on:
+      - backend                # nginx.staging.conf reverse-proxies /api → backend:8080
     environment:
       - HTTP_PROXY=http://10.60.3.254:3128
       - HTTPS_PROXY=http://10.60.3.254:3128
@@ -31,5 +66,59 @@ services:
       - HTTPS_PROXY=http://10.60.3.254:3128
       - NO_PROXY=localhost,127.0.0.1
 
+  # ── Backend stack (auth + model proxy) ───────────────────────────────────────
+  # These share this compose project's default network, so the frontend nginx
+  # reaches the API at http://backend:8080 (see nginx.conf / nginx.staging.conf).
+  # Works zero-config locally (admin / password). The standalone backend compose
+  # in go-backend/ is the alternative used by `npm run dev` (Vite on :5173).
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: chatbotadmin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chatbotadmin}
+      POSTGRES_DB: chatbotadmin
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatbotadmin -d chatbotadmin"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+    restart: unless-stopped
 
+  # One-shot: apply migrations + seed the admin (and OIDC provider, if set), then exit.
+  migrate:
+    build: ./go-backend
+    entrypoint: ["/app/migrate"]
+    environment: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    build: ./go-backend
+    container_name: chatbotadmin-backend
+    environment: *backend-env
+    expose:
+      - "8080"                # internal only; the frontend nginx proxies to it
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    restart: unless-stopped
+
+volumes:
+  pgdata:

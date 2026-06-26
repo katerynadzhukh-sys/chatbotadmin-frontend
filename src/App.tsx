@@ -1,60 +1,70 @@
-import { useState } from "react";
-import { Route, Routes, useLocation, useNavigate } from "react-router-dom";
+import { Navigate, Route, Routes } from "react-router-dom";
+import { useAuth } from "./auth/AuthContext";
 import { BottomNavBar } from "./components/BottomNavBar";
 import { Sidebar } from "./components/Sidebar";
 import { TopAppBar } from "./components/TopAppBar";
+import { ProtectedRoute } from "./components/ProtectedRoute";
 import { DashboardPage } from "./pages/DashboardPage";
+import { AuthCallbackPage } from "./pages/AuthCallbackPage";
 import { LoginPage } from "./pages/LoginPage";
 import { StatisticsPage } from "./pages/StatisticsPage";
 import { WidgetConfigPage } from "./pages/WidgetConfigPage";
 
-const AUTH_STORAGE_KEY = "chatbotadmin.rememberMe";
-
-function App() {
-  const [isAuthenticated, setIsAuthenticated] = useState(() => localStorage.getItem(AUTH_STORAGE_KEY) === "true");
-  const location = useLocation();
-  const navigate = useNavigate();
-
-  const handleLogin = (rememberMe: boolean) => {
-    if (rememberMe) {
-      localStorage.setItem(AUTH_STORAGE_KEY, "true");
-    } else {
-      localStorage.removeItem(AUTH_STORAGE_KEY);
-    }
-    setIsAuthenticated(true);
-    navigate("/");
-  };
-
-  const handleLogout = () => {
-    localStorage.removeItem(AUTH_STORAGE_KEY);
-    setIsAuthenticated(false);
-    navigate("/login");
-  };
-
-  if (!isAuthenticated || location.pathname === "/login") {
-    return <LoginPage onLogin={handleLogin} />;
-  }
+function AuthenticatedLayout({ children }: { children: React.ReactNode }) {
+  const { logout } = useAuth();
 
   return (
     <div className="bg-surface text-on-surface min-h-screen flex flex-row">
-      <Sidebar onLogout={handleLogout} />
-      <div className="flex-grow flex flex-col lg:pl-64 min-w-0">
-        <Routes>
-          <Route
-            path="/"
-            element={
-              <>
-                <TopAppBar title="Dashboard Übersicht" />
-                <DashboardPage />
-              </>
-            }
-          />
-          <Route path="/widgets/:id" element={<WidgetConfigPage />} />
-          <Route path="/statistiken" element={<StatisticsPage />} />
-        </Routes>
-      </div>
+      <Sidebar onLogout={logout} />
+      <div className="flex-grow flex flex-col lg:pl-64 min-w-0">{children}</div>
       <BottomNavBar />
     </div>
+  );
+}
+
+function App() {
+  return (
+    <Routes>
+      {/* Public auth routes */}
+      <Route path="/login" element={<LoginPage />} />
+      <Route path="/auth/callback" element={<AuthCallbackPage />} />
+
+      {/* Protected app routes */}
+      <Route
+        path="/"
+        element={
+          <ProtectedRoute>
+            <AuthenticatedLayout>
+              <TopAppBar title="Dashboard Übersicht" />
+              <DashboardPage />
+            </AuthenticatedLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/widgets/:id"
+        element={
+          <ProtectedRoute>
+            <AuthenticatedLayout>
+              <WidgetConfigPage />
+            </AuthenticatedLayout>
+          </ProtectedRoute>
+        }
+      />
+      <Route
+        path="/statistiken"
+        element={
+          <ProtectedRoute>
+            <AuthenticatedLayout>
+              <StatisticsPage />
+            </AuthenticatedLayout>
+          </ProtectedRoute>
+        }
+      />
+
+      {/* Unknown paths fall back to the dashboard, which enforces auth. */}
+      <Route path="*" element={<Navigate to="/" replace />} />
+    </Routes>
   );
 }
 

@@ -1,126 +1,118 @@
-# Chatbot Widget - Deployment & Testing Guide
+# Chatbot Admin — Deployment Guide
 
-This guide outlines how to embed, test, and verify the Chatbot Widget both in your local development environment and on the staging server.
+One **frontend** (SPA + widget loader, served by Nginx) and one **Go backend**
+(auth, API keys, model proxy) with **Postgres** + **Redis**. The SPA calls
+same-origin `/api`; Nginx reverse-proxies `/api` to the backend. All secrets live
+in the backend — nothing sensitive is bundled into the SPA. Auth details:
+[AUTHENTICATION.md](./AUTHENTICATION.md).
+
+| Component | Port | Role |
+| --- | --- | --- |
+| frontend (Nginx) | 80 / 443 | static SPA + `/widget.js`; proxies `/api` → backend |
+| backend (Go) | 8080 | JWT/OIDC auth, API keys, model proxy |
+| Postgres / Redis | — | users, providers, API keys / JWT revocation |
+| widget mock-portal | 8082 | standalone site that embeds the widget |
+
+> **Mock widget portal** — available on **every** deployment as a **separate,
+> cross-origin origin** (locally `:8082`; on a server the same host on `:8082`,
+> or override with `VITE_WIDGET_PORTAL_URL`). It embeds the widget and logs in
+> against the admin's real backend (`POST /api/auth/login`), so it always
+> exercises the true cross-origin flow. It's linked from the admin user menu
+> (admins only). Browsing to `http://<host>:8080` returns **404** — the backend
+> serves only `/api/*` and `/healthz`.
+
+There are exactly three deployments:
 
 ---
 
-## 1. TESTING LOCALLY (localhost)
+## 1. Local Development
 
-For local testing, the project runs a dual-container setup:
-1. **`local-frontend`**: Serves the Chatbot Admin UI and hosts the widget loader script (`/widget.js`) at **`http://localhost:8081`**.
-2. **`widget-test-site`**: A lightweight Nginx container serving a mockup JLU Gießen portal page at **`http://localhost:8082`**.
+Live code reload (Vite HMR) **and** the cross-origin widget portal, one command:
 
-### Browser Links
-* **Admin UI:** [http://localhost:8081](http://localhost:8081)
-* **Widget Mock Portal:** [http://localhost:8082](http://localhost:8082)
-
-### Quick Start
-To start the local testing stack with live rebuilding:
 ```bash
-docker compose up local-frontend widget-test-site -d --build
+npm install        # first time only
+npm run dev
 ```
 
-### Testing Steps
-1. **Access the Mock Portal:** Open your browser and navigate to [http://localhost:8082](http://localhost:8082).
-2. **Configure the Widget Teststeuerung Panel:** 
-   * Confirm the **Widget Server Origin** is set to `http://localhost:8081` (your local frontend server).
-   * Select a **Widget ID** (e.g., `support-bot` or `sales-tracker`).
-   * Click **Widget neu laden** (Reload Widget). This dynamically injects the passive `div` placeholder and the global script loader into the DOM.
-3. **Verify Widget Behavior:**
-   * The floating action button (FAB) with the configured icon (e.g., a globe) should appear in the corner specified by the widget layout.
-   * Click the FAB to open the chatbot window.
-   * You should see a typing indicator followed by the greeting message.
-   * Ask the bot mock questions (e.g., *"Was ist die JLU?"* or *"Semesterticket"*) to verify context-aware replies.
-4. **Access the Admin Panel:** Manage and configure widgets at [http://localhost:8081](http://localhost:8081).
+`npm run dev` starts the backend (Docker: Postgres + Redis + migrate + serve),
+the widget portal, and Vite. No `.env` needed — a **`admin` / `password`**
+superadmin is seeded.
+
+- **Admin UI (live reload):** http://localhost:5173 → log in `admin` / `password`.
+- **Widget mock-portal (cross-origin):** http://localhost:8082 → log in
+  `admin` / `password`, then **Widget neu laden**. Its *Widget Server Origin* is
+  pre-filled to `http://localhost:5173` (the dev admin), so the portal on `:8082`
+  talks to the admin on `:5173` — a genuine cross-origin test.
+
+Stop with `Ctrl-C` (Vite) then `npm run backend:down`. To customise the admin
+password, `KI_API_KEY`, or OIDC, copy `go-backend/.env.example` →
+`go-backend/.env`, edit, and `npm run backend:up`.
+
+| Script | Action |
+| --- | --- |
+| `npm run dev` | Backend + widget portal + Vite. |
+| `npm run dev:frontend` | Vite only. |
+| `npm run backend:up` / `backend:logs` / `backend:down` | Manage the backend. |
 
 ---
 
-## 2. TESTING ON STAGING SERVER (sv90073.hrz.uni-giessen.de)
+## 2. Staging
 
-On the staging environment hosted at **`sv90073.hrz.uni-giessen.de`**, the widget script is served globally, allowing you to embed it on external test pages or mock CMS sites.
+A real server (`sv90073.hrz.uni-giessen.de`) running ready-made images. On the
+server, in the repo checkout:
 
-### Staging Architecture
-* **Admin Frontend / Widget Script:** `https://sv90073.hrz.uni-giessen.de/widget.js`
-* **Staging Test Site:** `https://sv90073.hrz.uni-giessen.de/test-widget/`
-
-### Browser Links
-* **Staging Admin UI:** [https://sv90073.hrz.uni-giessen.de](https://sv90073.hrz.uni-giessen.de)
-* **Staging Widget Mock Portal:** [https://sv90073.hrz.uni-giessen.de/test-widget/](https://sv90073.hrz.uni-giessen.de/test-widget/)
-
-### Running the Stack on Staging
-1. SSH into the staging server:
-   ```bash
-   ssh user@sv90073.hrz.uni-giessen.de
-   ```
-2. Navigate to your project directory and pull the latest production images from the GitHub Container Registry:
-   ```bash
-   docker compose pull
-   ```
-3. Run the container services in background mode:
-   ```bash
-   docker compose up -d
-   ```
-   *This starts the `chatbotadmin-frontend` on host port `443` (SSL, which also serves the mock test site securely under `/test-widget/`).*
-
-### Embedding the Widget on Staging Pages
-To test the widget on staging CMS environments or static staging portals:
-
-1. **Add the HTML Placeholder Container:**
-   Paste the following passive `<div>` container into the page content (e.g., via rich text editor or raw HTML block). Editors do not need to paste script tags here:
-   ```html
-   <div class="chatbot-widget"
-        data-widget-id="support-bot"
-        data-kb="jlu-staging-2026"
-        data-routing="public-widget"
-        data-lang="de"></div>
-   ```
-2. **Include the Global Loader Script:**
-   Include the widget script **once globally** in the staging portal's main theme (e.g., in the `<head>` or before `</body>`):
-   ```html
-   <script src="https://sv90073.hrz.uni-giessen.de/widget.js" defer></script>
-   ```
-
-## 3. SSL CONFIGURATION ON STAGING
-
-To configure SSL on the staging server using your certificate files:
-* **Private Key:** `/etc/ssl/private/priv.pem`
-* **Certificate:** `/etc/ssl/certs/sv90073.pem`
-
-You can configure the Nginx web server inside the Docker container to handle SSL termination directly. We have created a staging Nginx config file [nginx.staging.conf](file:///Users/stenseegel/gitHub/chatbotadmin-frontend/nginx.staging.conf) in the project.
-
-1. **Update `docker-compose.yml` on Staging:**
-   Modify the `chatbotadmin-frontend` service to mount your SSL certificates, mount the staging Nginx configuration, and map the SSL ports (default is port 443 for HTTPS and port 80 for HTTP redirects):
-   ```yaml
-     chatbotadmin-frontend:
-       image: ghcr.io/stenseegel/chatbotadmin-frontend:latest
-       container_name: chatbotadmin-frontend
-       ports:
-         - "443:443"             # Maps host port 443 to container HTTPS port 443
-         - "80:80"               # Maps host port 80 to container HTTP port 80 (for redirects)
-       volumes:
-         # Mount host certificates into container Nginx SSL folder
-         - /etc/ssl/certs/sv90073.pem:/etc/nginx/ssl/sv90073.pem:ro
-         - /etc/ssl/private/priv.pem:/etc/nginx/ssl/priv.pem:ro
-         # Override default nginx config with staging configuration
-         - ./nginx.staging.conf:/etc/nginx/conf.d/default.conf:ro
-       restart: always
-   ```
-2. **Access Staging UI:** 
-   Once restarted (`docker compose up -d`), you can access the secure site at:
-   * **Staging Admin UI:** [https://sv90073.hrz.uni-giessen.de](https://sv90073.hrz.uni-giessen.de)
-   * **Staging Widget Script:** `https://sv90073.hrz.uni-giessen.de/widget.js`
-
-> [!NOTE]
-> **Do we need the port in the staging URL?**
-> * **Using Port 443:** If you bind to the default HTTPS port (`"443:443"`), **you do not need the port in the URL** (e.g. `https://sv90073.hrz.uni-giessen.de/widget.js`).
-> * **Alternative Port 442:** If port `443` is already in use by another service on the host, change the ports mapping to `"442:443"`. In that case, **you must specify the port** in your URLs (e.g. `https://sv90073.hrz.uni-giessen.de:442/widget.js`).
-
-
-
-## 4. STAGING CORS CONFIGURATION
-If the staging widget executes backend API calls (e.g. to a backend container), the backend must respond with proper CORS headers allowing your staging origin:
-```http
-Access-Control-Allow-Origin: https://sv90073.hrz.uni-giessen.de
-Access-Control-Allow-Methods: GET, POST, OPTIONS
+```bash
+cp .env.staging.example .env     # fill in every FILL_IN value (secrets + OIDC)
+docker compose pull              # frontend image from GHCR
+docker compose up -d --build     # frontend + backend + Postgres + Redis + portal
 ```
 
+- The **frontend** is the prebuilt GHCR image; the **backend** builds from
+  `go-backend/` (publishing a backend image to GHCR is a TODO).
+- **TLS** is served by the frontend on 80/443 using the host certs
+  (`/etc/ssl/certs/sv90073.pem`, `/etc/ssl/private/priv.pem`) and
+  `nginx.staging.conf` — already wired in `docker-compose.yml`. (If `:443` is
+  taken, map `"442:443"` and add `:442` to the URLs + OIDC redirect URIs.)
+- **Admin UI:** https://sv90073.hrz.uni-giessen.de — once OIDC is on, the **first
+  SSO login becomes superadmin**, so log in immediately (see AUTHENTICATION.md).
+- The widget portal (`widget-test-site`, `:8082`) is plain HTTP; for a TLS site
+  serve it on an HTTPS origin or point `VITE_WIDGET_PORTAL_URL` at the real portal.
+
+**Required `.env`** (full template in [`.env.staging.example`](../.env.staging.example)):
+
+| Var | Notes |
+| --- | --- |
+| `GO_ENV=production` | Fail-closed token revocation; makes `ALLOWED_ORIGINS` required. |
+| `POSTGRES_PASSWORD`, `JWT_SECRET` (≥32), `AUTH_PROVIDER_SECRET_KEY` (base64 32 B) | Core secrets. |
+| `ALLOWED_ORIGINS` | The admin origin, e.g. `https://sv90073.hrz.uni-giessen.de`. CORS is backend-driven by this. |
+| `ADMIN_PASSWORD`, `KI_API_KEY` | Seed admin (fallback) + HRZ model proxy. |
+| `OIDC_*` | Keycloak (JLU `jlu` realm); redirect URIs use the staging host. See AUTHENTICATION.md. |
+| `BACKEND_HTTP_PROXY`, `BACKEND_HTTPS_PROXY`, `BACKEND_NO_PROXY` | Only if the host reaches the internet via the HRZ proxy. |
+
+Embed the widget on any page:
+
+```html
+<div class="chatbot-widget" data-widget-id="support-bot" data-kb="jlu-staging-2026" data-lang="de"></div>
+<script src="https://sv90073.hrz.uni-giessen.de/widget.js" defer></script>
+```
+
+---
+
+## 3. Production
+
+Identical to staging, but runs **only the prod-ready image** instead of `latest`.
+Promote a validated staging image, then deploy with that tag pinned:
+
+```bash
+# Promote the tested image (CI or manually):
+docker tag  ghcr.io/stenseegel/chatbotadmin-frontend:latest ghcr.io/stenseegel/chatbotadmin-frontend:prod
+docker push ghcr.io/stenseegel/chatbotadmin-frontend:prod
+
+# On the prod server — .env sets FRONTEND_IMAGE_TAG=prod plus prod secrets/origins:
+docker compose pull
+docker compose up -d --build
+```
+
+The only differences from staging are in the prod `.env`: `FRONTEND_IMAGE_TAG=prod`
+(so it runs the promoted image, not `latest`), the production domain in
+`ALLOWED_ORIGINS`, and the production `OIDC_*` redirect URIs.

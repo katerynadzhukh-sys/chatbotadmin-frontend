@@ -1,3 +1,5 @@
+import { apiFetch } from "../auth/api";
+
 export interface ChatMessage {
   role: "system" | "user" | "assistant";
   content: string;
@@ -16,15 +18,15 @@ interface ChatResponse {
 
 /**
  * Sendet einen Chat-Verlauf an den Backend-Proxy (/api/chat) und gibt die vom
- * gewählten Sprachmodell generierte Antwort zurück. openai-node läuft
- * serverseitig im Vite-Proxy gegen den HRZ-Endpunkt.
+ * gewählten Sprachmodell generierte Antwort zurück. Der Go-Backend-Proxy ruft
+ * serverseitig (mit angehängtem JWT) den HRZ-Endpunkt auf.
  */
 export async function sendChatMessage(params: {
   model: string;
   messages: ChatMessage[];
   maxTokens?: number;
 }): Promise<ChatResult> {
-  const res = await fetch("/api/chat", {
+  const res = await apiFetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(params),
@@ -48,7 +50,7 @@ export async function streamChatMessage(
   params: { model: string; messages: ChatMessage[]; maxTokens?: number },
   onToken: (chunk: string) => void,
 ): Promise<ChatResult> {
-  const res = await fetch("/api/chat", {
+  const res = await apiFetch("/api/chat", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ ...params, stream: true }),

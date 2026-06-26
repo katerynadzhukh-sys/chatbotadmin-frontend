@@ -1,3 +1,4 @@
+import { useCurrentUser } from "../hooks/useCurrentUser";
 import { Icon } from "./Icon";
 
 interface TopAppBarProps {
@@ -5,6 +6,8 @@ interface TopAppBarProps {
 }
 
 export function TopAppBar({ title }: TopAppBarProps) {
+  const user = useCurrentUser();
+
   return (
     <header className="bg-surface-container-lowest dark:bg-inverse-surface border-b border-outline-variant dark:border-outline shadow-sm dark:shadow-none top-0 z-40 sticky">
       <div className="flex justify-between items-center px-gutter py-4 w-full max-w-container-max mx-auto">
@@ -22,7 +25,9 @@ export function TopAppBar({ title }: TopAppBarProps) {
             <Icon name="notifications" />
           </button>
           <div className="h-10 w-10 rounded-full bg-primary-container flex items-center justify-center overflow-hidden border-2 border-surface shadow-sm transition-transform scale-95 active:scale-90 lg:hidden">
-            <span className="text-on-primary-container text-xs font-semibold">AU</span>
+            <span className="text-on-primary-container text-xs font-semibold">
+              {user?.initials ?? "?"}
+            </span>
           </div>
         </div>
       </div>

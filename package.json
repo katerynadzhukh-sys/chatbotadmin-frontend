@@ -4,14 +4,17 @@
   "version": "0.0.0",
   "type": "module",
   "scripts": {
-    "dev": "vite",
+    "dev": "npm run backend:up && docker compose up -d widget-test-site && vite",
+    "dev:frontend": "vite",
+    "backend:up": "docker compose -f go-backend/docker-compose.yml up -d --build",
+    "backend:down": "docker compose -f go-backend/docker-compose.yml down",
+    "backend:logs": "docker compose -f go-backend/docker-compose.yml logs -f backend",
     "build": "tsc -b && vite build",
     "lint": "eslint .",
     "preview": "vite preview"
   },
   "dependencies": {
     "lucide-react": "^1.21.0",
-    "openai": "^6.44.0",
     "react": "^19.2.6",
     "react-dom": "^19.2.6",
     "react-markdown": "^10.1.0",

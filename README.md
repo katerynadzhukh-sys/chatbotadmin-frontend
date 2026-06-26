@@ -55,18 +55,15 @@ For deeper configurations, check the following guides:
 
 ## Local Development
 
-1. **Setup Environment:**
-   ```bash
-   cp .env.example .env.local
-   ```
-2. **Install Dependencies & Start Dev Server:**
-   ```bash
-   npm install
-   npm run dev
-   ```
-3. **Start Local Test Stack (with Mock JLU Portal):**
-   ```bash
-   docker compose up local-frontend widget-test-site -d --build
-   ```
-   * **Admin UI:** [http://localhost:8081](http://localhost:8081)
-   * **Mock Portal:** [http://localhost:8082](http://localhost:8082)
+```bash
+npm install
+npm run dev
+```
+
+`npm run dev` starts the backend (Docker), the widget mock-portal, and the Vite
+dev server with live reload — seeded with an `admin` / `password` superadmin.
+
+* **Admin UI (live reload):** [http://localhost:5173](http://localhost:5173)
+* **Widget mock-portal (cross-origin):** [http://localhost:8082](http://localhost:8082)
+
+See [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for staging and production.

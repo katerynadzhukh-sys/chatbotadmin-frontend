@@ -1,0 +1,85 @@
+# Local development stack for the auth + model-proxy backend.
+#
+#   docker compose up
+#
+# Starts Postgres + Redis, runs migrations (which seed the admin user and, if
+# configured, the OIDC provider), then serves the API on :8080.
+#
+# Works out of the box with NO .env file: you get a local "admin" / "password"
+# superadmin login (no Keycloak required). Create a .env (from .env.example) to
+# override the dev defaults — e.g. to set KI_API_KEY or wire up OIDC.
+
+# Shared backend env. The dev defaults below make local login turnkey; every
+# value is overridable via .env or the shell environment. NEVER rely on these
+# defaults in production — set GO_ENV=production with real secrets there.
+x-backend-env: &backend-env
+  DATABASE_URL: postgres://chatbotadmin:${POSTGRES_PASSWORD:-chatbotadmin}@postgres:5432/chatbotadmin?sslmode=disable
+  REDIS_HOST: redis
+  GO_ENV: ${GO_ENV:-development}
+  JWT_SECRET: ${JWT_SECRET:-local-dev-secret-at-least-32-chars-long-xx}
+  ADMIN_USERNAME: ${ADMIN_USERNAME:-admin}
+  ADMIN_PASSWORD: ${ADMIN_PASSWORD:-password}
+  # :5173 = the Vite dev admin UI; :8082 = the widget mock-portal, which logs in
+  # cross-origin to the admin (Vite proxies /api to this backend).
+  ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:5173,http://localhost:8082}
+  KI_API_KEY: ${KI_API_KEY:-}
+  KI_BASE_URL: ${KI_BASE_URL:-https://api.hrz.uni-giessen.de/v1}
+
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: chatbotadmin
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-chatbotadmin}
+      POSTGRES_DB: chatbotadmin
+    ports:
+      - "5432:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U chatbotadmin -d chatbotadmin"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    command: ["redis-server", "--save", "", "--appendonly", "no"]
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-shot: apply migrations + seed, then exit.
+  migrate:
+    build: .
+    entrypoint: ["/app/migrate"]
+    env_file:
+      - path: .env
+        required: false
+    environment: *backend-env
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  backend:
+    build: .
+    env_file:
+      - path: .env
+        required: false
+    environment: *backend-env
+    ports:
+      - "${BACKEND_HOST_PORT:-8080}:8080"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+volumes:
+  pgdata:
