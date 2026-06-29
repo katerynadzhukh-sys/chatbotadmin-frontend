@@ -48,8 +48,11 @@ Status legend: `[x]` done · `[ ]` open · `[~]` partial
         `docker-compose.yml`, on the shared network so the frontend nginx reaches
         `backend:8080`. Staging/prod run `docker compose up` with the repo-root
         `.env` (template: `.env.staging.example`); prod pins `FRONTEND_IMAGE_TAG=prod`.
-  - [ ] Build & publish the backend image to GHCR (`chatbotadmin-backend`) so
+  - [x] Build & publish the backend image to GHCR (`chatbotadmin-backend`) so
         staging/prod pull it instead of building from `go-backend/` source.
+        (`docker-publish.yml` now builds both images via a matrix; root compose
+        pulls `chatbotadmin-backend` with `pull_policy: always`, prod pins
+        `BACKEND_IMAGE_TAG=prod`.)
   - [ ] Real secrets: `JWT_SECRET`, `AUTH_PROVIDER_SECRET_KEY` (base64 32 bytes,
         required once `OIDC_CLIENT_SECRET` is set), `OIDC_CLIENT_SECRET`,
         `ALLOWED_ORIGINS` (required in prod).

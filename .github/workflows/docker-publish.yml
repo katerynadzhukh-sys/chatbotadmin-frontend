@@ -1,4 +1,4 @@
-name: Build and Publish Docker Image
+name: Build and Publish Docker Images
 
 on:
   push:
@@ -6,7 +6,6 @@ on:
 
 env:
   REGISTRY: ghcr.io
-  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
   build-and-push:
@@ -15,6 +14,20 @@ jobs:
       contents: read
       packages: write
 
+    # One job per image. The frontend builds from the repo root; the backend
+    # builds from go-backend/ so staging/prod can pull it instead of compiling
+    # Go on the server (which fails behind the HRZ proxy).
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: chatbotadmin-frontend
+            context: .
+            file: Dockerfile
+          - name: chatbotadmin-backend
+            context: ./go-backend
+            file: ./go-backend/Dockerfile
+
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -22,11 +35,11 @@ jobs:
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
 
-
       # GHCR requires lowercase repository/image names.
-      - name: Downcase Image Name
-        run: |
-          echo "IMAGE_NAME_LOWER=${IMAGE_NAME,,}" >> $GITHUB_ENV
+      - name: Compute lowercase image name
+        env:
+          OWNER: ${{ github.repository_owner }}
+        run: echo "IMAGE=${REGISTRY}/${OWNER,,}/${{ matrix.name }}" >> "$GITHUB_ENV"
 
       - name: Log in to the Container registry
         uses: docker/login-action@v3
@@ -39,7 +52,7 @@ jobs:
         id: meta
         uses: docker/metadata-action@v5
         with:
-          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME_LOWER }}
+          images: ${{ env.IMAGE }}
           tags: |
             type=ref,event=branch
             type=sha,format=short
@@ -48,9 +61,11 @@ jobs:
       - name: Build and push Docker image
         uses: docker/build-push-action@v6
         with:
-          context: .
+          context: ${{ matrix.context }}
+          file: ${{ matrix.file }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
+          # Per-image cache scope so the two builds don't evict each other.
+          cache-from: type=gha,scope=${{ matrix.name }}
+          cache-to: type=gha,mode=max,scope=${{ matrix.name }}

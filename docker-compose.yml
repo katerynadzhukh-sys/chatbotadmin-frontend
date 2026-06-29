@@ -97,8 +97,10 @@ services:
     restart: unless-stopped
 
   # One-shot: apply migrations + seed the admin (and OIDC provider, if set), then exit.
+  # Reuses the backend image (same binary set); just overrides the entrypoint.
   migrate:
-    build: ./go-backend
+    image: ghcr.io/stenseegel/chatbotadmin-backend:${BACKEND_IMAGE_TAG:-latest}
+    pull_policy: always
     entrypoint: ["/app/migrate"]
     environment: *backend-env
     depends_on:
@@ -106,7 +108,11 @@ services:
         condition: service_healthy
 
   backend:
-    build: ./go-backend
+    # Prebuilt image from GHCR (published by .github/workflows/docker-publish.yml);
+    # staging/prod pull it rather than compiling Go on the server. Prod pins
+    # BACKEND_IMAGE_TAG=prod in .env (mirrors FRONTEND_IMAGE_TAG).
+    image: ghcr.io/stenseegel/chatbotadmin-backend:${BACKEND_IMAGE_TAG:-latest}
+    pull_policy: always
     container_name: chatbotadmin-backend
     environment: *backend-env
     expose:

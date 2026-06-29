@@ -63,12 +63,15 @@ server, in the repo checkout:
 
 ```bash
 cp .env.staging.example .env     # fill in every FILL_IN value (secrets + OIDC)
-docker compose pull              # frontend image from GHCR
-docker compose up -d --build     # frontend + backend + Postgres + Redis + portal
+docker compose pull              # frontend + backend images from GHCR
+docker compose up -d             # frontend + backend + Postgres + Redis + portal
 ```
 
-- The **frontend** is the prebuilt GHCR image; the **backend** builds from
-  `go-backend/` (publishing a backend image to GHCR is a TODO).
+- **No build runs on the server.** Both the **frontend**
+  (`ghcr.io/stenseegel/chatbotadmin-frontend`) and the **backend**
+  (`ghcr.io/stenseegel/chatbotadmin-backend`) are prebuilt images published by
+  [`.github/workflows/docker-publish.yml`](../.github/workflows/docker-publish.yml)
+  on every push to `main`. `pull_policy: always` keeps them fresh.
 - **TLS** is served by the frontend on 80/443 using the host certs
   (`/etc/ssl/certs/sv90073.pem`, `/etc/ssl/private/priv.pem`) and
   `nginx.staging.conf` — already wired in `docker-compose.yml`. (If `:443` is
@@ -104,15 +107,17 @@ Identical to staging, but runs **only the prod-ready image** instead of `latest`
 Promote a validated staging image, then deploy with that tag pinned:
 
 ```bash
-# Promote the tested image (CI or manually):
-docker tag  ghcr.io/stenseegel/chatbotadmin-frontend:latest ghcr.io/stenseegel/chatbotadmin-frontend:prod
-docker push ghcr.io/stenseegel/chatbotadmin-frontend:prod
+# Promote the tested images (CI or manually) — tag both frontend and backend:
+for img in chatbotadmin-frontend chatbotadmin-backend; do
+  docker tag  ghcr.io/stenseegel/$img:latest ghcr.io/stenseegel/$img:prod
+  docker push ghcr.io/stenseegel/$img:prod
+done
 
-# On the prod server — .env sets FRONTEND_IMAGE_TAG=prod plus prod secrets/origins:
+# On the prod server — .env pins the prod tags plus prod secrets/origins:
 docker compose pull
-docker compose up -d --build
+docker compose up -d
 ```
 
 The only differences from staging are in the prod `.env`: `FRONTEND_IMAGE_TAG=prod`
-(so it runs the promoted image, not `latest`), the production domain in
-`ALLOWED_ORIGINS`, and the production `OIDC_*` redirect URIs.
+and `BACKEND_IMAGE_TAG=prod` (so it runs the promoted images, not `latest`), the
+production domain in `ALLOWED_ORIGINS`, and the production `OIDC_*` redirect URIs.
