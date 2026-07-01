@@ -52,6 +52,7 @@ const (
 	oidcStateCookie    = "oidc_state"
 	oidcVerifierCookie = "oidc_verifier"
 	oidcProviderCookie = "oidc_provider"
+	oidcReturnToCookie = "oidc_return_to"
 	oidcCookieMaxAge   = 5 * 60 // 5 minutes — covers user navigating to IdP and back.
 )
 
@@ -250,6 +251,18 @@ func (h *Handler) OIDCLogin(w http.ResponseWriter, r *http.Request) {
 	setOIDCCookie(w, r, oidcVerifierCookie, verifier)
 	setOIDCCookie(w, r, oidcProviderCookie, row.ID)
 
+	// A cross-origin caller (the widget-test portal) may pass ?return_to=<url>
+	// to have the callback drop the session back at *its* origin instead of the
+	// default SuccessRedirect. Only origins in the CORS allowlist are honoured —
+	// anything else is ignored, closing the open-redirect hole.
+	if rt := r.URL.Query().Get("return_to"); rt != "" {
+		if validated, ok := validateReturnTo(rt, h.allowedOrigins); ok {
+			setOIDCCookie(w, r, oidcReturnToCookie, validated)
+		} else {
+			slog.Warn("oidc login: rejected return_to (origin not allowlisted)", "return_to", rt)
+		}
+	}
+
 	authURL := cached.oauth2.AuthCodeURL(state,
 		oauth2.SetAuthURLParam("code_challenge", pkceChallenge(verifier)),
 		oauth2.SetAuthURLParam("code_challenge_method", "S256"),
@@ -263,27 +276,27 @@ func (h *Handler) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 
 	stateCookie, err := r.Cookie(oidcStateCookie)
 	if err != nil || stateCookie.Value == "" {
-		oidcErrRedirect(w, r, "state_missing")
+		h.oidcErrRedirect(w, r, "state_missing")
 		return
 	}
 	verifierCookie, err := r.Cookie(oidcVerifierCookie)
 	if err != nil || verifierCookie.Value == "" {
-		oidcErrRedirect(w, r, "verifier_missing")
+		h.oidcErrRedirect(w, r, "verifier_missing")
 		return
 	}
 	providerCookie, err := r.Cookie(oidcProviderCookie)
 	if err != nil || providerCookie.Value == "" {
-		oidcErrRedirect(w, r, "provider_missing")
+		h.oidcErrRedirect(w, r, "provider_missing")
 		return
 	}
 
 	if r.URL.Query().Get("state") != stateCookie.Value {
-		oidcErrRedirect(w, r, "state_mismatch")
+		h.oidcErrRedirect(w, r, "state_mismatch")
 		return
 	}
 	code := r.URL.Query().Get("code")
 	if code == "" {
-		oidcErrRedirect(w, r, "code_missing")
+		h.oidcErrRedirect(w, r, "code_missing")
 		return
 	}
 
@@ -295,14 +308,14 @@ func (h *Handler) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 
 	row, err := oStore.GetActiveOIDCProvider(ctx)
 	if err != nil || row == nil || row.ID != providerCookie.Value {
-		oidcErrRedirect(w, r, "provider_unavailable")
+		h.oidcErrRedirect(w, r, "provider_unavailable")
 		return
 	}
 
 	cached, err := globalOIDCCache.load(ctx, *row)
 	if err != nil {
 		slog.Error("oidc callback: provider init", "err", err, "providerID", row.ID)
-		oidcErrRedirect(w, r, "provider_init_failed")
+		h.oidcErrRedirect(w, r, "provider_init_failed")
 		return
 	}
 
@@ -315,40 +328,40 @@ func (h *Handler) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 	)
 	if err != nil {
 		slog.Warn("oidc callback: code exchange failed", "err", err)
-		oidcErrRedirect(w, r, "code_exchange_failed")
+		h.oidcErrRedirect(w, r, "code_exchange_failed")
 		return
 	}
 
 	rawIDToken, ok := tok.Extra("id_token").(string)
 	if !ok || rawIDToken == "" {
-		oidcErrRedirect(w, r, "id_token_missing")
+		h.oidcErrRedirect(w, r, "id_token_missing")
 		return
 	}
 	idToken, err := cached.verifier.Verify(ctx, rawIDToken)
 	if err != nil {
 		slog.Warn("oidc callback: id_token verify failed", "err", err)
-		oidcErrRedirect(w, r, "id_token_invalid")
+		h.oidcErrRedirect(w, r, "id_token_invalid")
 		return
 	}
 
 	var claims oidcClaims
 	if err := idToken.Claims(&claims); err != nil {
-		oidcErrRedirect(w, r, "claims_parse_failed")
+		h.oidcErrRedirect(w, r, "claims_parse_failed")
 		return
 	}
 	if claims.Sub == "" {
-		oidcErrRedirect(w, r, "sub_missing")
+		h.oidcErrRedirect(w, r, "sub_missing")
 		return
 	}
 	if claims.Email == "" {
 		slog.Warn("oidc callback: email claim missing", "sub", claims.Sub)
-		oidcErrRedirect(w, r, "email_missing")
+		h.oidcErrRedirect(w, r, "email_missing")
 		return
 	}
 	if !claims.EmailVerified {
 		slog.Warn("oidc callback: email_verified false; refusing to provision",
 			"sub", claims.Sub, "email", claims.Email)
-		oidcErrRedirect(w, r, "email_unverified")
+		h.oidcErrRedirect(w, r, "email_unverified")
 		return
 	}
 
@@ -356,7 +369,7 @@ func (h *Handler) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		slog.Warn("oidc callback: user resolution failed",
 			"err", err, "sub", claims.Sub, "email", claims.Email)
-		oidcErrRedirect(w, r, "user_resolution_failed")
+		h.oidcErrRedirect(w, r, "user_resolution_failed")
 		return
 	}
 
@@ -369,7 +382,7 @@ func (h *Handler) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 
 	tokenStr, err := h.signToken(user.ID, user.Username, user.Role)
 	if err != nil {
-		oidcErrRedirect(w, r, "token_sign_failed")
+		h.oidcErrRedirect(w, r, "token_sign_failed")
 		return
 	}
 
@@ -377,6 +390,14 @@ func (h *Handler) OIDCCallback(w http.ResponseWriter, r *http.Request) {
 	if target == "" {
 		target = "/"
 	}
+	// A validated return_to (set at login by a cross-origin portal) overrides the
+	// default SuccessRedirect so the session lands back at the caller's origin.
+	if c, err := r.Cookie(oidcReturnToCookie); err == nil && c.Value != "" {
+		if validated, ok := validateReturnTo(c.Value, h.allowedOrigins); ok {
+			target = validated
+		}
+	}
+	clearOIDCCookie(w, r, oidcReturnToCookie)
 	http.Redirect(w, r, appendAuthFragment(target, tokenStr, user), http.StatusFound)
 }
 
@@ -620,14 +641,50 @@ type oidcClaims struct {
 	PreferredUN   string `json:"preferred_username"`
 }
 
-// oidcErrRedirect bounces to /?oidc_error=<code> so the login page can render
-// a friendly message. Details stay in server logs.
-func oidcErrRedirect(w http.ResponseWriter, r *http.Request, code string) {
-	u := &url.URL{Path: "/"}
+// oidcErrRedirect bounces to <target>?oidc_error=<code> so the login page can
+// render a friendly message. The target is the app root by default, or the
+// validated return_to origin when a cross-origin portal started the flow.
+// Details stay in server logs.
+func (h *Handler) oidcErrRedirect(w http.ResponseWriter, r *http.Request, code string) {
+	// Default to the app root; if a cross-origin portal initiated the flow with a
+	// validated return_to, bounce the error back there instead so it can render
+	// the failure rather than stranding the user on the admin origin.
+	target := "/"
+	if c, err := r.Cookie(oidcReturnToCookie); err == nil && c.Value != "" {
+		if validated, ok := validateReturnTo(c.Value, h.allowedOrigins); ok {
+			target = validated
+		}
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		u = &url.URL{Path: "/"}
+	}
 	q := u.Query()
 	q.Set("oidc_error", code)
 	u.RawQuery = q.Encode()
 	http.Redirect(w, r, u.String(), http.StatusFound)
+}
+
+// validateReturnTo reports whether rawURL is an absolute URL whose origin
+// (scheme://host, port included) is present in the allowlist, returning the
+// normalised URL when it is. This is the open-redirect guard for the OIDC
+// return_to: only origins the deployment already trusts for CORS may receive
+// the auth fragment.
+func validateReturnTo(rawURL string, allowed []string) (string, bool) {
+	if rawURL == "" {
+		return "", false
+	}
+	u, err := url.Parse(rawURL)
+	if err != nil || !u.IsAbs() || u.Host == "" {
+		return "", false
+	}
+	origin := u.Scheme + "://" + u.Host
+	for _, a := range allowed {
+		if strings.EqualFold(strings.TrimRight(a, "/"), origin) {
+			return u.String(), true
+		}
+	}
+	return "", false
 }
 
 // appendAuthFragment puts the JWT + user JSON into the URL fragment of `target`

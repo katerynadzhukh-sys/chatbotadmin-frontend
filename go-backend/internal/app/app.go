@@ -49,6 +49,9 @@ func RunServer(cfg *config.Config, version string) error {
 	// ---- handlers ------------------------------------------------------------
 	authStore := authhandler.NewStore(pool)
 	authH := authhandler.NewHandler(authStore, cfg.JWTSecret, blacklist)
+	// The OIDC broker validates the `return_to` parameter (used by the
+	// cross-origin widget-test portal) against the same CORS allowlist.
+	authH.SetAllowedOrigins(cfg.AllowedOrigins)
 
 	usersH := users.NewHandler(users.NewStore(pool))
 	apiKeysH := apikeys.NewHandler(apikeys.NewStore(pool))

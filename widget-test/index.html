@@ -374,6 +374,20 @@
       background-color: #0043d0;
     }
 
+    /* Spinner shown while the auth config (SSO vs. password) is fetched */
+    .auth-spinner {
+      width: 24px;
+      height: 24px;
+      border: 3px solid var(--border-color);
+      border-top-color: var(--primary-color);
+      border-radius: 50%;
+      animation: auth-spin 0.7s linear infinite;
+    }
+
+    @keyframes auth-spin {
+      to { transform: rotate(360deg); }
+    }
+
     /* Logout button in control panel */
     .btn-logout {
       width: 100%;
@@ -410,7 +424,23 @@
       </div>
       <h2>Anmeldung erforderlich</h2>
       <p class="auth-subtitle">Nur für autorisierte Tester. Melden Sie sich mit Ihren Admin-Zugangsdaten an.</p>
-      <form id="auth-form" novalidate>
+
+      <span class="auth-error-msg" id="auth-error" style="display:none; margin-bottom:12px"></span>
+
+      <!-- Loading state while GET /api/auth/providers resolves which method to show -->
+      <div id="auth-loading" style="display:flex; justify-content:center; padding:8px 0">
+        <div class="auth-spinner"></div>
+      </div>
+
+      <!-- SSO single-button: shown when an OIDC provider is configured (mirrors the admin login) -->
+      <button type="button" class="auth-btn" id="auth-sso-btn"
+              style="display:none; align-items:center; justify-content:center; gap:6px">
+        <span class="material-symbols-outlined" style="font-size:18px">login</span>
+        <span id="auth-sso-label">Anmelden mit SSO</span>
+      </button>
+
+      <!-- Local username/password form: shown when local auth is enabled -->
+      <form id="auth-form" novalidate style="display:none">
         <div class="auth-field">
           <label for="auth-username">Benutzername</label>
           <input type="text" id="auth-username" placeholder="admin" required autocomplete="username">
@@ -419,7 +449,6 @@
           <label for="auth-password">Passwort</label>
           <input type="password" id="auth-password" placeholder="••••••••" required autocomplete="current-password">
         </div>
-        <span class="auth-error-msg" id="auth-error" style="display:none"></span>
         <button type="submit" class="auth-btn" id="auth-submit">Anmelden</button>
       </form>
     </div>
@@ -556,6 +585,9 @@
     const authPwInput = document.getElementById('auth-password');
     const authError = document.getElementById('auth-error');
     const authSubmit = document.getElementById('auth-submit');
+    const authLoading = document.getElementById('auth-loading');
+    const authSsoBtn = document.getElementById('auth-sso-btn');
+    const authSsoLabel = document.getElementById('auth-sso-label');
     const btnLogout = document.getElementById('btn-logout');
 
     function getServerOrigin() {
@@ -567,6 +599,86 @@
       authError.style.display = 'block';
       authPwInput.classList.add('input-error');
     }
+
+    // --- OIDC/SSO support: mirror the admin login's config-driven method choice.
+    // The admin app decides between an SSO button and the password form from
+    // GET /api/auth/providers; this portal does the same so a configured IdP
+    // shows the single SSO button here too (see src/pages/LoginPage.tsx).
+
+    function decodeBase64Url(input) {
+      const b64 = input.replace(/-/g, '+').replace(/_/g, '/');
+      const padded = b64 + '='.repeat((4 - (b64.length % 4)) % 4);
+      const binary = atob(padded);
+      const bytes = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+      return new TextDecoder().decode(bytes);
+    }
+
+    // Decode the #oidc=<base64url({token,user})> fragment the broker appends when
+    // it returns from SSO (same contract as the admin AuthCallbackPage). Returns
+    // true when a session was captured.
+    function handleOidcCallback() {
+      const hash = window.location.hash;
+      if (!hash.startsWith('#oidc=')) return false;
+      try {
+        const payload = JSON.parse(decodeBase64Url(hash.slice('#oidc='.length)));
+        if (!payload.token || !payload.user) throw new Error('incomplete');
+        localStorage.setItem(TOKEN_KEY, payload.token);
+        localStorage.setItem(USER_KEY, JSON.stringify(payload.user));
+        // Strip the fragment so a reload can't replay a stale token.
+        history.replaceState({}, document.title, window.location.pathname + window.location.search);
+        authOverlay.style.display = 'none';
+        return true;
+      } catch (_) {
+        showAuthError('Anmelde-Token konnte nicht verarbeitet werden.');
+        return false;
+      }
+    }
+
+    // Show the SSO button, the password form, or a "no method" message, matching
+    // what the backend advertises. localAuthEnabled is false whenever OIDC is
+    // active, so the two are mutually exclusive (same as the admin login).
+    function renderAuthMode(oidcProvider, localEnabled) {
+      authLoading.style.display = 'none';
+      if (oidcProvider) {
+        authSsoLabel.textContent = 'Anmelden mit ' + oidcProvider.name;
+        authSsoBtn.style.display = 'flex';
+        authForm.style.display = 'none';
+      } else if (localEnabled) {
+        authSsoBtn.style.display = 'none';
+        authForm.style.display = 'block';
+      } else {
+        authSsoBtn.style.display = 'none';
+        authForm.style.display = 'none';
+        showAuthError('Keine Anmeldemethode verfügbar.');
+      }
+    }
+
+    async function initAuthMode() {
+      authLoading.style.display = 'flex';
+      authSsoBtn.style.display = 'none';
+      authForm.style.display = 'none';
+      let data = null;
+      try {
+        const res = await fetch(getServerOrigin() + '/api/auth/providers');
+        if (res.ok) data = await res.json();
+      } catch (_) { /* backend unreachable — fall back to the password form */ }
+      if (data) {
+        const oidcProvider = (data.providers || []).find((p) => p.type === 'oidc') || null;
+        renderAuthMode(oidcProvider, data.localAuthEnabled);
+      } else {
+        // A hiccup should never strand the tester at a button-less screen.
+        renderAuthMode(null, true);
+      }
+    }
+
+    authSsoBtn.addEventListener('click', () => {
+      // Ask the broker to drop the session back at THIS portal origin (the
+      // backend validates return_to against its CORS allowlist) rather than the
+      // admin app, which lives on a different origin.
+      const returnTo = window.location.origin + window.location.pathname;
+      window.location.href =
+        getServerOrigin() + '/api/auth/oidc/login?return_to=' + encodeURIComponent(returnTo);
+    });
 
     authForm.addEventListener('submit', async (e) => {
       e.preventDefault();
@@ -654,7 +766,7 @@
 
     // Function to reload widget script dynamically
     function loadWidget() {
-      if (localStorage.getItem(AUTH_KEY) !== 'true') return;
+      if (!localStorage.getItem(TOKEN_KEY)) return;
 
       // 1. Remove existing script and widget UI elements if any
       const existingScript = document.getElementById('dynamically-loaded-widget-script');
@@ -729,6 +841,22 @@
 
     // Bind event
     btnReload.addEventListener('click', loadWidget);
+
+    // Auth bootstrap (runs now that getServerOrigin() has a value): decide what
+    // the overlay shows, mirroring the admin login config.
+    if (handleOidcCallback()) {
+      // Session captured from the SSO round-trip; the widget loads via
+      // DOMContentLoaded below.
+    } else {
+      const oidcErr = new URLSearchParams(window.location.search).get('oidc_error');
+      if (oidcErr) showAuthError('SSO-Anmeldung fehlgeschlagen (' + oidcErr + ')');
+      if (localStorage.getItem(TOKEN_KEY)) {
+        authOverlay.style.display = 'none';
+      } else {
+        // No session yet — fetch the config and render SSO button or password form.
+        initAuthMode();
+      }
+    }
 
     // Initial load on startup
     window.addEventListener('DOMContentLoaded', () => {

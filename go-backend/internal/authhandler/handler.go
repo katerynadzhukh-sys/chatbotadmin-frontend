@@ -48,15 +48,23 @@ type LoginFailureRecorder interface {
 
 // Handler holds the dependencies for the auth endpoints.
 type Handler struct {
-	store         Store
-	jwtSecret     string
-	blacklist     *auth.Blacklist
-	failRecorders []LoginFailureRecorder
+	store          Store
+	jwtSecret      string
+	blacklist      *auth.Blacklist
+	failRecorders  []LoginFailureRecorder
+	allowedOrigins []string
 }
 
 // NewHandler creates a new Handler.
 func NewHandler(store Store, jwtSecret string, blacklist *auth.Blacklist) *Handler {
 	return &Handler{store: store, jwtSecret: jwtSecret, blacklist: blacklist}
+}
+
+// SetAllowedOrigins configures the CORS allowlist used to validate the OIDC
+// `return_to` parameter, so the cross-origin widget-test portal can complete an
+// SSO round-trip back to itself without opening a redirect vulnerability.
+func (h *Handler) SetAllowedOrigins(origins []string) {
+	h.allowedOrigins = origins
 }
 
 // SetFailureRecorders configures rate limiters that should be incremented
