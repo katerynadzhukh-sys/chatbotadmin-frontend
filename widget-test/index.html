@@ -459,7 +459,7 @@
 
     <div class="control-group">
       <label for="kb-id">Knowledge-Base-ID</label>
-      <input type="text" id="kb-id" value="jlu-public-2024" placeholder="z.B. jlu-public-2024">
+      <input type="text" id="kb-id" value="" placeholder="wird aus der Widget-Konfiguration geladen…">
     </div>
 
     <div class="control-group">
@@ -607,8 +607,29 @@
         customWidgetIdGroup.style.display = 'block';
       } else {
         customWidgetIdGroup.style.display = 'none';
+        syncConfigFromBackend();
       }
     });
+
+    // Knowledge-Base-ID (und Routing) aus der im Admin-Panel gespeicherten
+    // Widget-Konfiguration übernehmen, damit die Anzeige hier nicht von den real
+    // genutzten Werten abweicht. Bei "Benutzerdefiniert" bleibt die Eingabe frei.
+    async function syncConfigFromBackend() {
+      const origin = serverOriginInput.value.trim();
+      const wid = widgetIdSelect.value;
+      if (!origin || !wid || wid === 'custom') return;
+      try {
+        const res = await fetch(`${origin}/api/widgets/${encodeURIComponent(wid)}`);
+        if (!res.ok) return;
+        const cfg = await res.json();
+        if (cfg && cfg.knowledgeBaseId) kbIdInput.value = cfg.knowledgeBaseId;
+        if (cfg && cfg.routing && [...routingSelect.options].some((o) => o.value === cfg.routing)) {
+          routingSelect.value = cfg.routing;
+        }
+      } catch (e) {
+        /* Konfiguration konnte nicht geladen werden – Eingabewerte beibehalten. */
+      }
+    }
 
     // Function to reload widget script dynamically
     function loadWidget() {
@@ -632,7 +653,7 @@
       }
 
       // 2. Extract configuration & rebuild passive placeholder div
-      const origin = serverOriginInput.value.trim() || 'http://localhost:8080';
+      const origin = serverOriginInput.value.trim() || 'http://localhost:8081';
       const kb = kbIdInput.value.trim();
       const routing = routingSelect.value;
 
@@ -682,13 +703,57 @@
         : `http://${window.location.hostname}:8081`;
     }
 
+    // Populate the Widget-ID dropdown from the backend (/api/widgets on the
+    // configured server origin), so widgets created in the admin panel show up
+    // here without editing this page. The "Benutzerdefiniert..." option is kept
+    // for ad-hoc IDs; the current selection is preserved when possible.
+    async function populateWidgetIds() {
+      const origin = serverOriginInput.value.trim();
+      if (!origin) return;
+      const previous = widgetIdSelect.value;
+      try {
+        const res = await fetch(`${origin}/api/widgets`);
+        if (!res.ok) return;
+        const data = await res.json();
+        const widgets = Array.isArray(data.widgets) ? data.widgets : [];
+        if (!widgets.length) return;
+
+        widgetIdSelect.innerHTML = '';
+        for (const w of widgets) {
+          const opt = document.createElement('option');
+          opt.value = w.id;
+          opt.textContent = w.name ? `${w.id} (${w.name})` : w.id;
+          widgetIdSelect.appendChild(opt);
+        }
+        const customOpt = document.createElement('option');
+        customOpt.value = 'custom';
+        customOpt.textContent = 'Benutzerdefiniert...';
+        widgetIdSelect.appendChild(customOpt);
+
+        // Restore the previous selection if it still exists.
+        if ([...widgetIdSelect.options].some((o) => o.value === previous)) {
+          widgetIdSelect.value = previous;
+        }
+        customWidgetIdGroup.style.display = widgetIdSelect.value === 'custom' ? 'block' : 'none';
+      } catch (e) {
+        console.warn('Widget-Liste konnte nicht geladen werden:', e);
+      }
+    }
+
     // Bind event
     btnReload.addEventListener('click', loadWidget);
+    // Refresh the list when the server origin changes.
+    serverOriginInput.addEventListener('change', () => {
+      populateWidgetIds().then(syncConfigFromBackend);
+    });
 
     // Initial load on startup
     window.addEventListener('DOMContentLoaded', () => {
-      // Small delay to ensure page rendering
-      setTimeout(loadWidget, 500);
+      // Liste der Widgets vom Backend laden, KB-ID/Routing aus der gespeicherten
+      // Konfiguration übernehmen, dann das gewählte Widget rendern.
+      populateWidgetIds()
+        .then(syncConfigFromBackend)
+        .finally(() => setTimeout(loadWidget, 500));
     });
   </script>
 </body>

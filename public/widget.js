@@ -1,4 +1,155 @@
 (function () {
+  // Determine the origin the loader was served from, so the widget can call the
+  // backend (/api/chat) on the same host it was loaded from. Captured at top
+  // level while document.currentScript is still valid.
+  let scriptOrigin = '';
+  try {
+    const cs = document.currentScript;
+    if (cs && cs.src) scriptOrigin = new URL(cs.src).origin;
+  } catch (e) { /* ignore */ }
+  if (!scriptOrigin) scriptOrigin = window.location.origin;
+
+  // ── Minimal, XSS-safe Markdown → HTML renderer for bot answers ──
+  // The input is HTML-escaped first, so no raw HTML from the model can be
+  // injected; every tag below is produced by this code. Supports: fenced/inline
+  // code, GFM tables, headings, bold, italic, links (http/https only), un-/
+  // ordered lists, blockquotes, horizontal rules and paragraphs. This mirrors
+  // what the React <Markdown> component renders in the admin panel.
+  function escapeHtml(s) {
+    return s
+      .replace(/&/g, '&amp;')
+      .replace(/</g, '&lt;')
+      .replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;');
+  }
+
+  // Inline formatting on already-escaped text. Inline code and links are stashed
+  // behind placeholders so emphasis isn't applied inside them.
+  function renderInline(text) {
+    // Inline code and links are stashed behind a NUL-delimited marker (\u0000,
+    // invisible in the source) so emphasis is not applied inside them. NUL never
+    // appears in escaped model text, so a plain " 5 " in the answer can't be
+    // mistaken for a placeholder index.
+    const stash = [];
+    const keep = (html) => '\u0000' + (stash.push(html) - 1) + '\u0000';
+    let out = text.replace(/`([^`]+)`/g, (_, c) => keep('<code>' + c + '</code>'));
+    out = out.replace(
+      /\[([^\]]+)\]\((https?:\/\/[^\s)]+)\)/g,
+      (_, t, u) => keep('<a href="' + u + '" target="_blank" rel="noopener noreferrer">' + t + '</a>'),
+    );
+    out = out
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/__([^_]+)__/g, '<strong>$1</strong>')
+      .replace(/\*([^*\n]+)\*/g, '<em>$1</em>');
+    return out.replace(/\u0000(\d+)\u0000/g, (_, n) => stash[+n]);
+  }
+
+  function renderMarkdown(src) {
+    const lines = String(src).replace(/\r\n/g, '\n').split('\n');
+    const isTableSep = (s) => /^\s*\|?\s*:?-{1,}:?\s*(\|\s*:?-{1,}:?\s*)+\|?\s*$/.test(s);
+    const cell = (s) => renderInline(escapeHtml(s));
+    const parseRow = (s) => {
+      let t = s.trim();
+      if (t.startsWith('|')) t = t.slice(1);
+      if (t.endsWith('|')) t = t.slice(0, -1);
+      return t.split('|').map((c) => c.trim());
+    };
+    const isSpecial = (s, idx) =>
+      /^\s*```/.test(s) ||
+      /^\s*#{1,6}\s+/.test(s) ||
+      /^\s*([-*_])\1{2,}\s*$/.test(s) ||
+      /^\s*>\s?/.test(s) ||
+      /^\s*[-*+]\s+/.test(s) ||
+      /^\s*\d+\.\s+/.test(s) ||
+      (s.indexOf('|') !== -1 && idx + 1 < lines.length && isTableSep(lines[idx + 1]));
+
+    let html = '';
+    let i = 0;
+    while (i < lines.length) {
+      const line = lines[i];
+
+      if (/^\s*```/.test(line)) {
+        const buf = [];
+        i++;
+        while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) buf.push(lines[i++]);
+        i++; // closing fence (if present)
+        html += '<pre><code>' + escapeHtml(buf.join('\n')) + '</code></pre>';
+        continue;
+      }
+
+      // Markdown-Tabellen werden als normaler Text ausgegeben (keine <table>),
+      // jede Zeile als „Spaltenüberschrift: Wert" pro Feld.
+      if (line.indexOf('|') !== -1 && i + 1 < lines.length && isTableSep(lines[i + 1])) {
+        const headers = parseRow(line);
+        i += 2;
+        while (i < lines.length && lines[i].indexOf('|') !== -1 && lines[i].trim() !== '') {
+          const cells = parseRow(lines[i]);
+          const parts = cells
+            .map((c, idx) => {
+              const value = c.trim();
+              if (!value) return '';
+              const label = (headers[idx] || '').trim();
+              return label ? cell(label) + ': ' + cell(value) : cell(value);
+            })
+            .filter(Boolean);
+          if (parts.length) html += '<p>' + parts.join('<br>') + '</p>';
+          i++;
+        }
+        continue;
+      }
+
+      const h = line.match(/^\s*#{1,6}\s+(.*)$/);
+      if (h) {
+        html += '<p class="chatbot-md-h">' + cell(h[1]) + '</p>';
+        i++;
+        continue;
+      }
+
+      if (/^\s*([-*_])\1{2,}\s*$/.test(line)) {
+        html += '<hr>';
+        i++;
+        continue;
+      }
+
+      if (/^\s*>\s?/.test(line)) {
+        const buf = [];
+        while (i < lines.length && /^\s*>\s?/.test(lines[i])) buf.push(lines[i++].replace(/^\s*>\s?/, ''));
+        html += '<blockquote>' + cell(buf.join(' ')) + '</blockquote>';
+        continue;
+      }
+
+      if (/^\s*[-*+]\s+/.test(line)) {
+        let items = '';
+        while (i < lines.length && /^\s*[-*+]\s+/.test(lines[i])) {
+          items += '<li>' + cell(lines[i].replace(/^\s*[-*+]\s+/, '')) + '</li>';
+          i++;
+        }
+        html += '<ul>' + items + '</ul>';
+        continue;
+      }
+
+      if (/^\s*\d+\.\s+/.test(line)) {
+        let items = '';
+        while (i < lines.length && /^\s*\d+\.\s+/.test(lines[i])) {
+          items += '<li>' + cell(lines[i].replace(/^\s*\d+\.\s+/, '')) + '</li>';
+          i++;
+        }
+        html += '<ol>' + items + '</ol>';
+        continue;
+      }
+
+      if (line.trim() === '') {
+        i++;
+        continue;
+      }
+
+      const buf = [];
+      while (i < lines.length && lines[i].trim() !== '' && !isSpecial(lines[i], i)) buf.push(lines[i++]);
+      html += '<p>' + cell(buf.join('\n')).replace(/\n/g, '<br>') + '</p>';
+    }
+    return html;
+  }
+
   // 1. Inject Google Fonts & Material Icons (once globally)
   if (!document.getElementById('widget-google-fonts')) {
     const fontsLink = document.createElement('link');
@@ -8,33 +159,7 @@
     document.head.appendChild(fontsLink);
   }
 
-  // 2. Define configurations for default widgets (from Widgets database)
-  const widgetConfigs = {
-    'support-bot': {
-      title: 'JLU Assistent',
-      greeting: 'Hallo! Wie kann ich dir heute helfen?',
-      accentColor: '#0052ff',
-      position: 'bottom-right',
-      icon: 'language',
-      templates: ['Was ist die JLU?', 'Wie bewerbe ich mich?', 'Semesterticket', 'Öffnungszeiten'],
-      rules: [
-        'Nur auf Deutsch antworten',
-        'Keine persönlichen Daten speichern',
-        'Keine medizinischen Ratschläge geben'
-      ]
-    },
-    'sales-tracker': {
-      title: 'Sales Tracker',
-      greeting: 'Willkommen zurück! Wobei kann ich unterstützen?',
-      accentColor: '#7c4dff',
-      position: 'bottom-left',
-      icon: 'analytics',
-      templates: ['Verkaufszahlen Q2', 'Neuste Leads', 'Support-Status'],
-      rules: []
-    }
-  };
-
-  // 3. Fallback configuration
+  // 2. Fallback configuration (used only if the backend config can't be reached).
   const defaultConfig = {
     title: 'ChatBot Support',
     greeting: 'Hallo! Wie kann ich dir helfen?',
@@ -42,30 +167,57 @@
     position: 'bottom-right',
     icon: 'smart_toy',
     templates: ['Hilfe', 'Kontakt'],
-    rules: []
+    rules: [],
+    startPrompt: '',
+    feedbackButtons: true,
+    maxTokens: undefined,
+    knowledgeBaseId: 'jlu/gpt-oss-20b',
   };
 
-  // 4. Function to initialize a single widget in a given container element
-  function initWidget(containerEl) {
+  // 3. Initialize a single widget: fetch its published config from the backend
+  //    (source of truth = admin panel), then build the UI.
+  async function initWidget(containerEl) {
     const widgetId = containerEl.getAttribute('data-widget-id') || 'support-bot';
-    const kbId = containerEl.getAttribute('data-kb') || 'jlu-public-2024';
-    const routing = containerEl.getAttribute('data-routing') || 'public-widget';
-    const lang = containerEl.getAttribute('data-lang') || 'de';
+    // API base on the host that served widget.js; overridable via data-api.
+    const apiBase = (containerEl.getAttribute('data-api') || `${scriptOrigin}/api`).replace(/\/+$/, '');
+    const chatEndpoint = `${apiBase}/chat`;
 
-    // Merge configuration
-    const activeConfig = Object.assign(
-      {},
-      defaultConfig,
-      widgetConfigs[widgetId] || {},
-      {
-        // Allow overriding via custom container attributes
-        title: containerEl.getAttribute('data-title') || (widgetConfigs[widgetId] && widgetConfigs[widgetId].title) || defaultConfig.title,
-        greeting: containerEl.getAttribute('data-greeting') || (widgetConfigs[widgetId] && widgetConfigs[widgetId].greeting) || defaultConfig.greeting,
-        accentColor: containerEl.getAttribute('data-color') || (widgetConfigs[widgetId] && widgetConfigs[widgetId].accentColor) || defaultConfig.accentColor,
-        position: containerEl.getAttribute('data-position') || (widgetConfigs[widgetId] && widgetConfigs[widgetId].position) || defaultConfig.position,
-        icon: containerEl.getAttribute('data-icon') || (widgetConfigs[widgetId] && widgetConfigs[widgetId].icon) || defaultConfig.icon,
-      }
-    );
+    // Fetch the widget config published by the admin panel. On failure we fall
+    // back to defaults + data-* overrides so the widget still renders.
+    let serverConfig = null;
+    try {
+      const res = await fetch(`${apiBase}/widgets/${encodeURIComponent(widgetId)}`);
+      if (res.ok) serverConfig = await res.json();
+    } catch (e) { /* fall back to defaults */ }
+    const sc = serverConfig || {};
+
+    // Merge: defaults <- server config <- per-embedding data-* overrides.
+    const activeConfig = Object.assign({}, defaultConfig, sc, {
+      title: containerEl.getAttribute('data-title') || sc.title || defaultConfig.title,
+      greeting: containerEl.getAttribute('data-greeting') || sc.greeting || defaultConfig.greeting,
+      accentColor: containerEl.getAttribute('data-color') || sc.accentColor || defaultConfig.accentColor,
+      position: containerEl.getAttribute('data-position') || sc.position || defaultConfig.position,
+      icon: containerEl.getAttribute('data-icon') || sc.icon || defaultConfig.icon,
+    });
+
+    // data-kb/data-model bleiben als Fallback für ältere Einbettungen ohne Backend-Config.
+    const knowledgeBaseId =
+      sc.knowledgeBaseId ||
+      containerEl.getAttribute('data-kb') ||
+      containerEl.getAttribute('data-model') ||
+      defaultConfig.knowledgeBaseId;
+    const routing = sc.routing || containerEl.getAttribute('data-routing') || 'public-widget';
+    const maxTokens = activeConfig.maxTokens;
+
+    // Conversation state for this widget instance (sent to the backend so the
+    // model has context across turns).
+    const history = [];
+    const rules = Array.isArray(activeConfig.rules) ? activeConfig.rules : [];
+    const promptBase = activeConfig.startPrompt || `Du bist „${activeConfig.title}", ein hilfreicher Assistent.`;
+    const systemPrompt = rules.length
+      ? `${promptBase}\nBeachte strikt folgende Regeln:\n- ${rules.join('\n- ')}`
+      : promptBase;
+    let isAwaiting = false;
 
     // Inject styles specific to this widget instance
     const styleEl = document.createElement('style');
@@ -369,6 +521,48 @@
       .chatbot-send span {
         font-size: 18px;
       }
+
+      /* Markdown content inside bot bubbles */
+      .chatbot-message p { margin: 0 0 6px; }
+      .chatbot-message p:last-child { margin-bottom: 0; }
+      .chatbot-message p.chatbot-md-h { font-weight: 700; margin: 8px 0 4px; }
+      .chatbot-message ul, .chatbot-message ol { margin: 6px 0; padding-left: 20px; }
+      .chatbot-message li { margin: 2px 0; }
+      .chatbot-message a { color: ${activeConfig.accentColor}; text-decoration: underline; word-break: break-word; }
+      .chatbot-message code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+        background: #f1f5f9;
+        border-radius: 4px;
+        padding: 1px 4px;
+        font-size: 12px;
+      }
+      .chatbot-message pre {
+        background: #f1f5f9;
+        border-radius: 8px;
+        padding: 8px 10px;
+        margin: 6px 0;
+        overflow-x: auto;
+      }
+      .chatbot-message pre code { background: transparent; padding: 0; }
+      .chatbot-message blockquote {
+        border-left: 3px solid #e2e8f0;
+        padding-left: 8px;
+        margin: 6px 0;
+        color: #475569;
+      }
+      .chatbot-message hr { border: none; border-top: 1px solid #e2e8f0; margin: 8px 0; }
+
+      /* Tables: scroll horizontally instead of overflowing the narrow bubble */
+      .chatbot-table-wrap { width: 100%; overflow-x: auto; margin: 6px 0; }
+      .chatbot-message table { border-collapse: collapse; width: 100%; font-size: 12px; }
+      .chatbot-message th, .chatbot-message td {
+        border: 1px solid #e2e8f0;
+        padding: 4px 8px;
+        text-align: left;
+        vertical-align: top;
+        overflow-wrap: anywhere;
+      }
+      .chatbot-message th { font-weight: 600; background: #f8fafc; }
     `;
     document.head.appendChild(styleEl);
 
@@ -439,82 +633,158 @@
     fab.addEventListener('click', toggleChat);
     closeBtn.addEventListener('click', toggleChat);
 
-    // Bot Answers Mock Database
-    function getMockAnswer(userText) {
-      const text = userText.toLowerCase();
-      
-      if (widgetId === 'support-bot') {
-        if (text.includes('was ist die jlu') || text.includes('giessen')) {
-          return 'Die Justus-Liebig-Universität Gießen (JLU) ist eine traditionsreiche Universität mit über 400 Jahren Geschichte. Sie zeichnet sich durch ein breites Fächerspektrum und exzellente Forschung aus!';
-        }
-        if (text.includes('bewerben') || text.includes('bewerbung')) {
-          return 'Die Bewerbung erfolgt online über unser Bewerbungsportal. Die genauen Fristen hängen von deinem Wunschstudiengang ab (meistens 15. Juli für das Wintersemester). Möchtest du Informationen zu Bachelor- oder Masterstudiengängen?';
-        }
-        if (text.includes('semesterticket') || text.includes('ticket') || text.includes('bus')) {
-          return 'Das Semesterticket der JLU ist im Semesterbeitrag enthalten. Es gilt im gesamten RMV-Gebiet und ermöglicht dir die kostenlose Nutzung von Bussen und Regionalzügen in Hessen.';
-        }
-        if (text.includes('öffnung') || text.includes('zeit') || text.includes('wann')) {
-          return 'Das Studierendensekretariat hat Mo-Do von 9:00 bis 16:00 Uhr und Fr von 9:00 bis 12:00 Uhr geöffnet. Die Hauptbibliothek steht dir rund um die Uhr (24/7) zur Verfügung!';
-        }
-        if (text.includes('hallo') || text.includes('hi') || text.includes('guten tag')) {
-          return 'Hallo! Wie kann ich dir heute bei Fragen zur JLU Gießen weiterhelfen?';
-        }
-        return 'Vielen Dank für deine Nachricht. Als JLU Assistent beantworte ich Fragen basierend auf der Wissensdatenbank. Zu deiner Anfrage habe ich leider keine direkte Übereinstimmung gefunden. Versuche es mit Schlagworten wie "Bewerbung", "Semesterticket" oder "Öffnungszeiten".';
-      }
+    // Send the user's message (plus prior turns) to the backend and stream the
+    // assistant's reply into a new bot bubble. Talks to /api/chat exactly like
+    // the admin panel does (knowledgeBaseId + messages, SSE when stream:true).
+    async function fetchAnswer(userText) {
+      history.push({ role: 'user', content: userText });
+      const messages = systemPrompt
+        ? [{ role: 'system', content: systemPrompt }, ...history]
+        : history.slice();
 
-      if (widgetId === 'sales-tracker') {
-        if (text.includes('verkäufe') || text.includes('umsatz') || text.includes('q2')) {
-          return 'Die Verkaufszahlen für Q2 liegen aktuell um 14% über dem Vorquartal. Besonders stark liefen die Enterprise-Lizenzen.';
-        }
-        if (text.includes('lead') || text.includes('kunden')) {
-          return 'Im CRM wurden heute bereits 18 neue Leads erfasst. Der zugewiesene Vertriebler für Top-Accounts wird direkt per Slack benachrichtigt.';
-        }
-        return 'Ich bin dein Sales-Tracker. Du kannst mich nach Vertriebszahlen, neuen Leads oder CRM-Informationen fragen!';
-      }
+      isAwaiting = true;
+      inputEl.disabled = true;
+      sendBtn.disabled = true;
+      showTypingIndicator();
 
-      return `Empfangene Nachricht: "${userText}". Dieses Widget läuft im Modus '${widgetId}' (Knowledge-Base: '${kbId}') und ist korrekt eingebettet!`;
+      let botEl = null;
+      let answer = '';
+
+      try {
+        const res = await fetch(chatEndpoint, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ knowledgeBaseId, messages, maxTokens, stream: true, widgetId }),
+        });
+
+        if (!res.ok || !res.body) {
+          let errMsg = `HTTP ${res.status}`;
+          try { const j = await res.json(); if (j && j.error) errMsg = j.error; } catch (e) { /* ignore */ }
+          throw new Error(errMsg);
+        }
+
+        // Parse the Server-Sent-Events stream: events are separated by a blank
+        // line, each carrying a JSON payload after "data:".
+        const reader = res.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let streamErr = null;
+        let finishReason = null;
+
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          let sep;
+          while ((sep = buffer.indexOf('\n\n')) !== -1) {
+            const rawEvent = buffer.slice(0, sep);
+            buffer = buffer.slice(sep + 2);
+
+            const dataLine = rawEvent.split('\n').find((l) => l.startsWith('data:'));
+            if (!dataLine) continue;
+            const payload = dataLine.slice(5).trim();
+            if (!payload) continue;
+
+            let data;
+            try { data = JSON.parse(payload); } catch (e) { continue; }
+
+            if (data.error) { streamErr = data.error; continue; }
+            if (data.finishReason) finishReason = data.finishReason;
+            if (data.content) {
+              if (!botEl) { removeTypingIndicator(); botEl = createBotBubble(); }
+              answer += data.content;
+              botEl.innerHTML = renderMarkdown(answer);
+              messagesContainer.scrollTop = messagesContainer.scrollHeight;
+            }
+          }
+        }
+
+        if (streamErr) throw new Error(streamErr);
+
+        removeTypingIndicator();
+        if (!answer) {
+          if (!botEl) botEl = createBotBubble();
+          // finishReason "length" = das Token-Limit wurde bereits durch die
+          // internen Überlegungen des Modells aufgebraucht, bevor sichtbarer
+          // Text entstand. Das ist keine Server-Störung, sondern ein zu
+          // niedriges Token-Limit für diese (komplexe) Frage.
+          answer =
+            finishReason === 'length'
+              ? 'Die Antwort konnte nicht vollständig erzeugt werden (Token-Limit erreicht). Bitte stelle eine kürzere, konkretere Frage oder erhöhe das Token-Limit des Widgets.'
+              : 'Es kam keine Antwort vom Server.';
+          botEl.innerText = answer;
+        }
+        history.push({ role: 'assistant', content: answer });
+        addFeedback();
+      } catch (err) {
+        removeTypingIndicator();
+        const msg = err instanceof Error ? err.message : 'Unbekannter Fehler';
+        const errEl = createBotBubble();
+        errEl.innerText = `⚠️ ${msg}`;
+      } finally {
+        isAwaiting = false;
+        inputEl.disabled = false;
+        sendBtn.disabled = false;
+        inputEl.focus();
+      }
     }
 
-    // Append message
+    // Append a complete message bubble (used for user messages and static bot
+    // messages such as the greeting).
     function appendMessage(sender, text) {
       const msgEl = document.createElement('div');
       msgEl.className = `chatbot-message ${sender}`;
-      msgEl.innerText = text;
-
+      // Bot messages may contain Markdown (greeting, answers); user input is set
+      // as plain text via innerText so it can never inject HTML.
       if (sender === 'bot') {
-        messagesContainer.appendChild(msgEl);
-        
-        // Render feedback buttons
-        const showFeedback = containerEl.getAttribute('data-feedback') !== 'false';
-        if (showFeedback) {
-          const feedbackWrapper = document.createElement('div');
-          feedbackWrapper.className = 'chatbot-feedback';
-          feedbackWrapper.innerHTML = `
-            <button class="chatbot-feedback-btn" data-type="up" title="Hilfreich">
-              <span class="material-symbols-outlined" style="font-size: 16px;">thumb_up</span>
-            </button>
-            <button class="chatbot-feedback-btn" data-type="down" title="Nicht hilfreich">
-              <span class="material-symbols-outlined" style="font-size: 16px;">thumb_down</span>
-            </button>
-          `;
-          
-          feedbackWrapper.querySelectorAll('.chatbot-feedback-btn').forEach(btn => {
-            btn.addEventListener('click', function() {
-              const isActive = this.classList.contains('active');
-              feedbackWrapper.querySelectorAll('.chatbot-feedback-btn').forEach(b => b.classList.remove('active'));
-              if (!isActive) {
-                this.classList.add('active');
-                console.log(`Widget Feedback for ${widgetId}: ${this.dataset.type}`);
-              }
-            });
-          });
-          
-          messagesContainer.appendChild(feedbackWrapper);
-        }
+        msgEl.innerHTML = renderMarkdown(text);
       } else {
-        messagesContainer.appendChild(msgEl);
+        msgEl.innerText = text;
       }
-      
+      messagesContainer.appendChild(msgEl);
+      if (sender === 'bot') addFeedback();
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      return msgEl;
+    }
+
+    // Create an empty bot bubble that streamed tokens are written into.
+    function createBotBubble() {
+      const msgEl = document.createElement('div');
+      msgEl.className = 'chatbot-message bot';
+      messagesContainer.appendChild(msgEl);
+      messagesContainer.scrollTop = messagesContainer.scrollHeight;
+      return msgEl;
+    }
+
+    // Render the thumbs up/down feedback row beneath the most recent bot message.
+    function addFeedback() {
+      const showFeedback = activeConfig.feedbackButtons !== false;
+      if (!showFeedback) return;
+
+      const feedbackWrapper = document.createElement('div');
+      feedbackWrapper.className = 'chatbot-feedback';
+      feedbackWrapper.innerHTML = `
+        <button class="chatbot-feedback-btn" data-type="up" title="Hilfreich">
+          <span class="material-symbols-outlined" style="font-size: 16px;">thumb_up</span>
+        </button>
+        <button class="chatbot-feedback-btn" data-type="down" title="Nicht hilfreich">
+          <span class="material-symbols-outlined" style="font-size: 16px;">thumb_down</span>
+        </button>
+      `;
+
+      feedbackWrapper.querySelectorAll('.chatbot-feedback-btn').forEach(btn => {
+        btn.addEventListener('click', function() {
+          const isActive = this.classList.contains('active');
+          feedbackWrapper.querySelectorAll('.chatbot-feedback-btn').forEach(b => b.classList.remove('active'));
+          if (!isActive) {
+            this.classList.add('active');
+            console.log(`Widget Feedback for ${widgetId}: ${this.dataset.type}`);
+          }
+        });
+      });
+
+      messagesContainer.appendChild(feedbackWrapper);
       messagesContainer.scrollTop = messagesContainer.scrollHeight;
     }
 
@@ -542,19 +812,14 @@
 
     // Submit user input
     function handleSubmit() {
+      if (isAwaiting) return;
       const text = inputEl.value.trim();
       if (!text) return;
 
       inputEl.value = '';
       appendMessage('user', text);
       chipsContainer.style.display = 'none';
-
-      showTypingIndicator();
-      setTimeout(() => {
-        removeTypingIndicator();
-        const botAnswer = getMockAnswer(text);
-        appendMessage('bot', botAnswer);
-      }, 1200);
+      fetchAnswer(text);
     }
 
     sendBtn.addEventListener('click', handleSubmit);
@@ -571,7 +836,8 @@
       setTimeout(() => {
         removeTypingIndicator();
         appendMessage('bot', activeConfig.greeting);
-        
+        history.push({ role: 'assistant', content: activeConfig.greeting });
+
         if (activeConfig.templates && activeConfig.templates.length > 0) {
           chipsContainer.innerHTML = '';
           activeConfig.templates.forEach(tpl => {
@@ -603,7 +869,7 @@
         return;
       }
       el.setAttribute('data-chatbot-initialized', 'true');
-      initWidget(el);
+      initWidget(el).catch((e) => console.error('Chatbot-Widget konnte nicht initialisiert werden:', e));
     });
   });
 })();
