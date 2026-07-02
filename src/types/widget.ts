@@ -15,13 +15,9 @@ export interface WidgetRule {
 }
 
 export interface WidgetConfig {
-  apiKey: string;
-  model: string;
   startPrompt: string;
   templates: string[];
   rules: WidgetRule[];
-  minDialogDepth: number;
-  maxDialogDepth: number;
   saveHistory: boolean;
   feedbackButtons: boolean;
   rateLimitPerMinute: number;
@@ -36,7 +32,7 @@ export interface WidgetConfig {
 export interface Widget {
   id: string;
   name: string;
-  kbId: string;
+  knowledgeBaseId: string;
   routing: string;
   status: WidgetStatus;
   icon: string;

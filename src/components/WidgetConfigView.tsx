@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef, useState, type CSSProperties } from "react";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
 import { ModelCombobox } from "./ModelCombobox";
@@ -26,15 +26,13 @@ export interface WidgetConfigViewProps {
   widget: Widget;
   isNew: boolean;
   isActive: boolean;
-  showApiKey: boolean;
+  saved: boolean;
   copied: "code" | "url" | null;
   embedCode: string;
   directUrl: string;
   onSave: () => void;
   onCancel: () => void;
   onToggleStatus: () => void;
-  onToggleShowApiKey: () => void;
-  onRegenerateApiKey: () => void;
   onCopy: (text: string, kind: "code" | "url") => void;
   onUpdate: <K extends keyof Widget>(key: K, value: Widget[K]) => void;
   onUpdateConfig: <K extends keyof Widget["config"]>(key: K, value: Widget["config"][K]) => void;
@@ -44,15 +42,13 @@ export function WidgetConfigView({
   widget,
   isNew,
   isActive,
-  showApiKey,
+  saved,
   copied,
   embedCode,
   directUrl,
   onSave,
   onCancel,
   onToggleStatus,
-  onToggleShowApiKey,
-  onRegenerateApiKey,
   onCopy,
   onUpdate,
   onUpdateConfig,
@@ -62,8 +58,29 @@ export function WidgetConfigView({
   ]);
   const [previewDraft, setPreviewDraft] = useState("");
   const [previewTyping, setPreviewTyping] = useState(false);
+  // Vorschau zeigt zunächst nur den Chat-Button; erst per Klick öffnet sich das Fenster.
+  const [previewOpen, setPreviewOpen] = useState(false);
   // Grundeinstellungen sind beim Erstellen offen, bei bestehenden Widgets eingeklappt.
   const [basicsOpen, setBasicsOpen] = useState(isNew);
+
+  // Position von Button und Fenster innerhalb der Vorschau (laut Einstellung).
+  const previewPositionClass =
+    widget.config.position === "bottom-right" ? "bottom-3 right-3"
+    : widget.config.position === "bottom-left" ? "bottom-3 left-3"
+    : widget.config.position === "top-right" ? "top-3 right-3"
+    : "top-3 left-3";
+
+  // Begrüßungstext live in der Vorschau spiegeln, solange noch kein Gespräch
+  // läuft. React-Muster „State beim Prop-Wechsel anpassen“ (setState im Render,
+  // nicht im Effekt): https://react.dev/learn/you-might-not-need-an-effect
+  const greeting = widget.config.greeting || "Hallo! Wie kann ich dir helfen?";
+  const [prevGreeting, setPrevGreeting] = useState(greeting);
+  if (greeting !== prevGreeting) {
+    setPrevGreeting(greeting);
+    setPreviewMessages((msgs) =>
+      msgs.length === 1 && msgs[0].role === "bot" ? [{ role: "bot", text: greeting }] : msgs,
+    );
+  }
 
   // Vorschau-Chat bei neuen Nachrichten / während des Streamens nach unten scrollen.
   const messagesRef = useRef<HTMLDivElement>(null);
@@ -71,6 +88,11 @@ export function WidgetConfigView({
     const el = messagesRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [previewMessages, previewTyping]);
+
+  // Laufenden Vorschau-Stream abbrechen können (bei Reset/Unmount), damit späte
+  // Tokens nicht mehr in eine bereits ersetzte Bubble geschrieben werden.
+  const previewAbortRef = useRef<AbortController | null>(null);
+  useEffect(() => () => previewAbortRef.current?.abort(), []);
 
   // System-Prompt aus Start-Prompt + aktiven Regeln zusammenbauen.
   const buildSystemPrompt = (): string => {
@@ -89,25 +111,33 @@ export function WidgetConfigView({
     const trimmed = text.trim();
     if (!trimmed || previewTyping) return;
 
-    const model = widget.config.model.trim();
+    const knowledgeBaseId = widget.knowledgeBaseId.trim();
     const history: PreviewMessage[] = [...previewMessages, { role: "user", text: trimmed }];
     setPreviewMessages(history);
     setPreviewDraft("");
 
-    if (!model) {
+    if (!knowledgeBaseId) {
       setPreviewMessages((msgs) => [
         ...msgs,
-        { role: "bot", text: "⚠️ Bitte zuerst ein Sprachmodell auswählen.", notice: true },
+        { role: "bot", text: "⚠️ Bitte zuerst eine Knowledge-Base-ID angeben.", notice: true },
       ]);
       return;
     }
 
     setPreviewTyping(true);
 
+    // Vorherigen Stream (falls noch aktiv) abbrechen und Controller für diesen anlegen.
+    previewAbortRef.current?.abort();
+    const controller = new AbortController();
+    previewAbortRef.current = controller;
+
     // Beim ersten Token die Schreib-Animation durch eine echte Bot-Bubble ersetzen,
     // danach diese Bubble Token für Token verlängern. Der Updater muss rein sein
     // (StrictMode ruft ihn doppelt auf), daher leiten wir alles aus `msgs` ab.
     const appendToken = (chunk: string) => {
+      // Nach Abbruch (z. B. Reset) keine Tokens mehr anhängen — sonst landen sie
+      // in der frisch gesetzten Begrüßungs-Bubble.
+      if (controller.signal.aborted) return;
       setPreviewTyping(false);
       setPreviewMessages((msgs) => {
         const last = msgs[msgs.length - 1];
@@ -131,9 +161,12 @@ export function WidgetConfigView({
       }
 
       const { reply, finishReason } = await streamChatMessage(
-        { model, messages, maxTokens: widget.config.maxTokensPerAnswer },
+        { knowledgeBaseId, messages, maxTokens: widget.config.maxTokensPerAnswer, signal: controller.signal },
         appendToken,
       );
+
+      // Nach Abbruch (Reset) das Ergebnis dieses Streams verwerfen.
+      if (controller.signal.aborted) return;
 
       // Kein Inhalt gestreamt (z. B. Token-Limit bei Reasoning-Modellen).
       if (!reply.trim()) {
@@ -144,14 +177,18 @@ export function WidgetConfigView({
         setPreviewMessages((msgs) => [...msgs, { role: "bot", text, notice: true }]);
       }
     } catch (err) {
+      // Abbruch (Reset/Unmount) ist kein Fehler — keine Hinweis-Bubble anzeigen.
+      if (controller.signal.aborted) return;
       const message = err instanceof Error ? err.message : "Unbekannter Fehler";
       setPreviewMessages((msgs) => [...msgs, { role: "bot", text: `⚠️ ${message}`, notice: true }]);
     } finally {
-      setPreviewTyping(false);
+      if (!controller.signal.aborted) setPreviewTyping(false);
     }
   };
 
   const handlePreviewReset = () => {
+    // Laufenden Stream stoppen, damit seine Tokens nicht in die neue Begrüßung fließen.
+    previewAbortRef.current?.abort();
     setPreviewMessages([
       { role: "bot", text: widget.config.greeting || "Hallo! Wie kann ich dir helfen?" },
     ]);
@@ -233,10 +270,10 @@ export function WidgetConfigView({
             </button>
             <button
               onClick={onSave}
-              disabled={isNew && (!widget.name.trim() || !widget.kbId.trim())}
-              className="bg-primary text-on-primary px-4 py-2 rounded-lg shadow-sm hover:brightness-110 active:scale-95 transition-all font-label-sm text-label-sm disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100"
+              disabled={saved || (isNew && (!widget.name.trim() || !widget.knowledgeBaseId.trim()))}
+              className="bg-primary text-on-primary px-4 py-2 rounded-lg shadow-sm hover:brightness-110 active:scale-95 transition-all font-label-sm text-label-sm disabled:opacity-50 disabled:cursor-not-allowed disabled:active:scale-100 disabled:hover:brightness-100"
             >
-              {isNew ? "Erstellen" : "Speichern"}
+              {saved ? "Gespeichert" : isNew ? "Erstellen" : "Speichern"}
             </button>
           </div>
         </div>
@@ -282,7 +319,18 @@ export function WidgetConfigView({
                   <input
                     id="widget-name"
                     value={widget.name}
-                    onChange={(e) => onUpdate("name", e.target.value)}
+                    onChange={(e) => {
+                      const newName = e.target.value;
+                      // Titel automatisch mitführen, solange er nicht manuell
+                      // angepasst wurde (noch Standardwert "ChatBot", leer, oder
+                      // identisch mit dem bisherigen Namen).
+                      const titleUntouched =
+                        widget.config.title === "" ||
+                        widget.config.title === "ChatBot" ||
+                        widget.config.title === widget.name;
+                      if (titleUntouched) onUpdateConfig("title", newName);
+                      onUpdate("name", newName);
+                    }}
                     placeholder="z.B. Support Bot"
                     className="w-full px-4 py-2 bg-surface border border-outline-variant rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
                   />
@@ -290,14 +338,14 @@ export function WidgetConfigView({
 
                 <div className="grid grid-cols-1 sm:grid-cols-2 gap-stack-sm">
                   <div className="flex flex-col gap-1">
-                    <label className="font-label-sm text-on-surface-variant" htmlFor="widget-kbid">
+                    <label className="font-label-sm text-on-surface-variant" htmlFor="widget-kb">
                       Knowledge-Base-ID <span className="text-error">*</span>
                     </label>
-                    <input
-                      id="widget-kbid"
-                      value={widget.kbId}
-                      onChange={(e) => onUpdate("kbId", e.target.value)}
-                      placeholder="z.B. jlu-public-2024"
+                    <ModelCombobox
+                      id="widget-kb"
+                      value={widget.knowledgeBaseId}
+                      onChange={(value) => onUpdate("knowledgeBaseId", value)}
+                      placeholder="Knowledge-Base-ID eingeben…"
                       className="w-full px-4 py-2 bg-surface border border-outline-variant rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
                     />
                   </div>
@@ -327,22 +375,6 @@ export function WidgetConfigView({
               <Icon name="forum" className="text-primary" />
               Gesprächseinstellungen
             </h3>
-
-            <div className="flex flex-col gap-1">
-              <label className="font-label-sm text-on-surface-variant" htmlFor="widget-model">
-                Sprachmodell
-              </label>
-              <ModelCombobox
-                id="widget-model"
-                value={widget.config.model}
-                onChange={(v) => onUpdateConfig("model", v)}
-                placeholder="Modell auswählen…"
-                className="w-full px-4 py-2 pr-9 bg-surface border border-outline-variant rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
-              />
-              <p className="text-xs text-on-surface-variant">
-                Wird für die Antwortgenerierung verwendet (siehe Vorschau).
-              </p>
-            </div>
 
             <div className="flex flex-col gap-1">
               <label className="font-label-sm text-on-surface-variant" htmlFor="start-prompt">
@@ -681,58 +713,6 @@ export function WidgetConfigView({
             </div>
           </section>
 
-          {/* Verbindung — edit mode only */}
-          {!isNew && (
-            <section className="bg-surface-container-lowest border border-outline-variant rounded-xl p-6 space-y-stack-sm">
-              <h3 className="font-headline-md text-base font-bold flex items-center gap-2">
-                <Icon name="link" className="text-primary" />
-                Verbindung
-              </h3>
-
-              <div className="flex flex-col gap-1">
-                <label className="font-label-sm text-on-surface-variant">Knowledge-Base-ID</label>
-                <div className="flex items-center gap-2 px-4 py-3 bg-surface border border-outline-variant rounded-lg font-mono text-sm">
-                  <Icon name="database" className="text-on-surface-variant text-[18px]" />
-                  {widget.kbId}
-                </div>
-              </div>
-
-              <div className="flex flex-col gap-1">
-                <label className="font-label-sm text-on-surface-variant" htmlFor="api-key">
-                  API-Key
-                </label>
-                <div className="flex items-center gap-2">
-                  <input
-                    id="api-key"
-                    type={showApiKey ? "text" : "password"}
-                    readOnly
-                    value={widget.config.apiKey}
-                    className="w-full px-4 py-3 bg-surface border border-outline-variant rounded-lg font-mono text-sm outline-none"
-                  />
-                  <button
-                    type="button"
-                    onClick={onToggleShowApiKey}
-                    aria-label={showApiKey ? "API-Key verbergen" : "API-Key anzeigen"}
-                    className="p-3 border border-outline-variant rounded-lg hover:bg-surface-container-high transition-colors"
-                  >
-                    <Icon name={showApiKey ? "visibility_off" : "visibility"} className="text-[18px]" />
-                  </button>
-                  <button
-                    type="button"
-                    onClick={onRegenerateApiKey}
-                    aria-label="API-Key neu generieren"
-                    className="p-3 border border-outline-variant rounded-lg hover:bg-surface-container-high transition-colors"
-                  >
-                    <Icon name="refresh" className="text-[18px]" />
-                  </button>
-                </div>
-                <p className="text-xs text-on-surface-variant">
-                  Beim Neugenerieren wird der bisherige API-Key ungültig.
-                </p>
-              </div>
-            </section>
-          )}
-
           {/* Vorschau */}
           <section className="bg-surface-container-lowest border border-outline-variant rounded-xl p-6 space-y-stack-sm">
             <div className="flex items-center justify-between">
@@ -751,28 +731,52 @@ export function WidgetConfigView({
             </div>
 
             <div className="relative h-[420px] rounded-lg border border-outline-variant bg-surface overflow-hidden">
+              {/* Geschlossener Zustand: nur der Chat-Button an der eingestellten Position. */}
+              {!previewOpen && (
+                <button
+                  type="button"
+                  onClick={() => setPreviewOpen(true)}
+                  aria-label="Chat öffnen"
+                  className={`absolute w-14 h-14 rounded-full shadow-lg flex items-center justify-center text-white transition-transform hover:scale-105 ${previewPositionClass}`}
+                  style={{ backgroundColor: widget.config.accentColor }}
+                >
+                  <WidgetIcon name={widget.icon || "Bot"} size={26} />
+                </button>
+              )}
+
+              {/* Geöffneter Zustand: das Chat-Fenster. */}
+              {previewOpen && (
               <div
-                className={`absolute w-72 h-96 bg-surface-container-lowest border border-outline-variant rounded-xl shadow-lg overflow-hidden flex flex-col ${
-                  widget.config.position === "bottom-right" ? "bottom-3 right-3"
-                  : widget.config.position === "bottom-left" ? "bottom-3 left-3"
-                  : widget.config.position === "top-right"   ? "top-3 right-3"
-                  : "top-3 left-3"
-                }`}
+                className={`absolute w-72 h-96 bg-surface-container-lowest border border-outline-variant rounded-xl shadow-lg overflow-hidden flex flex-col ${previewPositionClass}`}
               >
                 <div
-                  className="flex items-center gap-2 px-3 py-2 text-sm font-semibold text-white shrink-0"
+                  className="flex items-center gap-2 px-3 py-2 text-white shrink-0"
                   style={{ backgroundColor: widget.config.accentColor }}
                 >
                   <WidgetIcon name={widget.icon || "Bot"} size={18} />
-                  <span className="truncate">{widget.config.title || "ChatBot"}</span>
+                  <div className="flex flex-col min-w-0 flex-1 leading-tight">
+                    <span className="truncate text-sm font-semibold">{widget.config.title || "ChatBot"}</span>
+                    <span className="flex items-center gap-1 text-[10px] opacity-90">
+                      <span className="w-1.5 h-1.5 rounded-full bg-green-400 shrink-0" />
+                      {widget.routing}
+                    </span>
+                  </div>
+                  <button
+                    type="button"
+                    onClick={() => setPreviewOpen(false)}
+                    aria-label="Chat schließen"
+                    className="p-0.5 rounded hover:bg-white/20 transition-colors shrink-0"
+                  >
+                    <Icon name="close" className="text-[18px]" />
+                  </button>
                 </div>
 
-                <div ref={messagesRef} className="flex-1 overflow-y-auto p-3 space-y-2">
+                <div ref={messagesRef} className="flex-1 overflow-y-auto p-3 space-y-2 bg-surface-container-low">
                   {previewMessages.map((msg, i) => (
                     <div key={i} className={`flex flex-col ${msg.role === "user" ? "items-end" : "items-start"}`}>
                       <div
                         className={`max-w-[85%] rounded-lg px-3 py-2 text-xs ${
-                          msg.role === "user" ? "text-white" : "bg-surface-container-low text-on-surface"
+                          msg.role === "user" ? "text-white" : "bg-surface-container-lowest text-on-surface"
                         }`}
                         style={msg.role === "user" ? { backgroundColor: widget.config.accentColor } : undefined}
                       >
@@ -807,30 +811,31 @@ export function WidgetConfigView({
 
                   {previewTyping && (
                     <div className="flex items-start">
-                      <div className="bg-surface-container-low rounded-lg px-3 py-2.5 flex items-center gap-1">
+                      <div className="bg-surface-container-lowest rounded-lg px-3 py-2.5 flex items-center gap-1">
                         <span className="w-1.5 h-1.5 rounded-full bg-on-surface-variant/50 animate-bounce [animation-delay:-0.3s]" />
                         <span className="w-1.5 h-1.5 rounded-full bg-on-surface-variant/50 animate-bounce [animation-delay:-0.15s]" />
                         <span className="w-1.5 h-1.5 rounded-full bg-on-surface-variant/50 animate-bounce" />
                       </div>
                     </div>
                   )}
-
-                  {previewMessages.length === 1 && widget.config.templates.filter(Boolean).length > 0 && (
-                    <div className="flex flex-wrap gap-1 pt-1">
-                      {widget.config.templates.filter(Boolean).map((tpl, i) => (
-                        <button
-                          key={i}
-                          type="button"
-                          onClick={() => handlePreviewSend(tpl)}
-                          className="px-2 py-0.5 rounded-full border text-[10px] font-medium cursor-pointer transition-colors hover:bg-surface-container-low"
-                          style={{ borderColor: widget.config.accentColor, color: widget.config.accentColor }}
-                        >
-                          {tpl}
-                        </button>
-                      ))}
-                    </div>
-                  )}
                 </div>
+
+                {/* Vorschlags-Chips unten links, oberhalb der Eingabe. */}
+                {previewMessages.length === 1 && widget.config.templates.filter(Boolean).length > 0 && (
+                  <div className="flex flex-wrap justify-start gap-1 px-2 pt-1 pb-1 shrink-0 bg-surface-container-low">
+                    {widget.config.templates.filter(Boolean).map((tpl, i) => (
+                      <button
+                        key={i}
+                        type="button"
+                        onClick={() => handlePreviewSend(tpl)}
+                        className="px-2 py-0.5 rounded-full border bg-surface-container-lowest text-[10px] font-medium cursor-pointer transition-colors hover:bg-surface-container-high"
+                        style={{ borderColor: widget.config.accentColor, color: widget.config.accentColor }}
+                      >
+                        {tpl}
+                      </button>
+                    ))}
+                  </div>
+                )}
 
                 <div className="flex items-center gap-1 p-2 border-t border-outline-variant shrink-0">
                   <input
@@ -843,7 +848,11 @@ export function WidgetConfigView({
                       }
                     }}
                     placeholder="Nachricht eingeben…"
-                    className="flex-1 px-3 py-1.5 bg-surface border border-outline-variant rounded-full text-xs outline-none focus:ring-2 focus:ring-primary min-w-0"
+                    className="flex-1 px-3 py-1.5 bg-surface border rounded-full text-xs outline-none focus:ring-2 min-w-0"
+                    style={{
+                      borderColor: widget.config.accentColor,
+                      "--tw-ring-color": widget.config.accentColor,
+                    } as CSSProperties}
                   />
                   <button
                     type="button"
@@ -857,6 +866,7 @@ export function WidgetConfigView({
                   </button>
                 </div>
               </div>
+              )}
             </div>
           </section>
 

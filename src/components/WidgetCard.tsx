@@ -37,8 +37,8 @@ export function WidgetCard({ widget }: WidgetCardProps) {
       <div className="mb-3">
         <h4 className="font-headline-md text-base font-bold">{widget.name}</h4>
         <div className="flex items-center gap-2 text-on-surface-variant mt-1">
-          <Icon name="database" className="text-sm" />
-          <span className="font-label-sm text-xs truncate">{widget.kbId}</span>
+          <Icon name="smart_toy" className="text-sm" />
+          <span className="font-label-sm text-xs truncate">{widget.knowledgeBaseId}</span>
         </div>
       </div>
 

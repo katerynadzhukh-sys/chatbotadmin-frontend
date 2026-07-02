@@ -1,12 +1,22 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { AddWidgetCard } from "../components/AddWidgetCard";
 import { SearchToolbar, type SortOption, type StatusFilter } from "../components/SearchToolbar";
 import { WidgetCard } from "../components/WidgetCard";
-import { loadWidgets } from "../data/widgetsStore";
+import { fetchWidgets } from "../data/widgetsStore";
 import type { Widget } from "../types/widget";
 
 export function DashboardPage() {
-  const [widgets] = useState<Widget[]>(loadWidgets);
+  const [widgets, setWidgets] = useState<Widget[]>([]);
+  const [loadError, setLoadError] = useState<string | null>(null);
+
+  useEffect(() => {
+    fetchWidgets()
+      .then((w) => {
+        setWidgets(w);
+        setLoadError(null);
+      })
+      .catch((err: unknown) => setLoadError(err instanceof Error ? err.message : "Unbekannter Fehler"));
+  }, []);
 
   const [search, setSearch] = useState("");
   const [statusFilter, setStatusFilter] = useState<StatusFilter>("all");
@@ -40,6 +50,12 @@ export function DashboardPage() {
         sortOption={sortOption}
         onSortOptionChange={setSortOption}
       />
+
+      {loadError ? (
+        <div className="rounded-lg border border-error/40 bg-error/10 px-4 py-3 text-sm text-error">
+          Widgets konnten nicht geladen werden: {loadError}
+        </div>
+      ) : null}
 
       <div className="flex items-center justify-between border-b border-outline-variant pb-4">
         <h2 className="font-headline-md text-headline-md text-on-surface">Ihre Widgets</h2>

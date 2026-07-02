@@ -1,9 +1,22 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { WidgetConfigView } from "../components/WidgetConfigView";
-import { ICON_OPTIONS } from "../components/widgetOptions";
-import { createDefaultConfig, loadWidgets, saveWidgets } from "../data/widgetsStore";
+import { createDefaultConfig, fetchWidgets, saveWidget } from "../data/widgetsStore";
 import type { Widget, WidgetAccent, WidgetStatus } from "../types/widget";
+
+function emptyWidget(id: string): Widget {
+  return {
+    id,
+    name: "",
+    knowledgeBaseId: "",
+    routing: "public",
+    status: "active",
+    icon: "Globe",
+    accent: "primary" as WidgetAccent,
+    stats: { conversations: 0, rating: 0 },
+    config: createDefaultConfig(),
+  };
+}
 
 function slugify(name: string): string {
   return name
@@ -24,14 +37,14 @@ function makeUniqueId(base: string, existing: Widget[]): string {
 
 const WIDGET_BASE_URL = import.meta.env.VITE_WIDGET_BASE_URL || "https://ki-chat.uni-giessen.de";
 
-function buildEmbedCode(widgetId: string, kbId: string, routing: string): string {
+function buildEmbedCode(widgetId: string, knowledgeBaseId: string, routing: string): string {
   return `<!-- 1. Globaler Loader (Einmalig im Theme / <head> einbinden) -->
 <script src="${WIDGET_BASE_URL}/widget.js" defer></script>
 
 <!-- 2. Widget-Platzhalter (Im Seiteninhalt einfügen) -->
 <div class="chatbot-widget"
   data-widget-id="${widgetId || "widget-id"}"
-  data-kb="${kbId || "kb-id"}"
+  data-kb="${knowledgeBaseId || "kb-id"}"
   data-routing="${routing || "public"}-widget"
   data-lang="de"
 ></div>`;
@@ -46,62 +59,67 @@ export function WidgetConfigPage() {
   const navigate = useNavigate();
   const isNew = id === "new";
 
-  const [widgets, setWidgets] = useState<Widget[]>(loadWidgets);
+  const [widgets, setWidgets] = useState<Widget[]>([]);
+  const [widget, setWidget] = useState<Widget>(() => emptyWidget(isNew ? "" : id ?? ""));
+  const [saveError, setSaveError] = useState<string | null>(null);
 
-  const [widget, setWidget] = useState<Widget>(() => {
-    if (isNew) {
-      return {
-        id: "",
-        name: "",
-        kbId: "",
-        routing: "public",
-        status: "active",
-        icon: ICON_OPTIONS[0],
-        accent: "primary" as WidgetAccent,
-        stats: { conversations: 0, rating: 0 },
-        config: createDefaultConfig(),
-      };
-    }
-    return (
-      widgets.find((w) => w.id === id) ?? {
-        id: id ?? "",
-        name: "",
-        kbId: "",
-        routing: "public",
-        status: "active",
-        icon: ICON_OPTIONS[0],
-        accent: "primary" as WidgetAccent,
-        stats: { conversations: 0, rating: 0 },
-        config: createDefaultConfig(),
-      }
-    );
-  });
+  // Bestand vom Backend laden und – beim Bearbeiten – das passende Widget setzen.
+  useEffect(() => {
+    let ignore = false;
+    fetchWidgets()
+      .then((list) => {
+        if (ignore) return;
+        setWidgets(list);
+        if (!isNew) {
+          const found = list.find((w) => w.id === id);
+          if (found) setWidget(found);
+        }
+      })
+      .catch((err: unknown) => {
+        if (!ignore) setSaveError(err instanceof Error ? err.message : "Unbekannter Fehler");
+      });
+    return () => {
+      ignore = true;
+    };
+  }, [id, isNew]);
 
-  const [showApiKey, setShowApiKey] = useState(false);
   const [copied, setCopied] = useState<"code" | "url" | null>(null);
+  // true direkt nach dem Speichern → Button zeigt "Gespeichert"; bei jeder
+  // Änderung wieder false → Button zeigt erneut "Speichern"/"Erstellen".
+  const [saved, setSaved] = useState(false);
 
   const update = <K extends keyof Widget>(key: K, value: Widget[K]) => {
+    setSaved(false);
     setWidget((current) => ({ ...current, [key]: value }));
   };
 
   const updateConfig = <K extends keyof Widget["config"]>(key: K, value: Widget["config"][K]) => {
+    setSaved(false);
     setWidget((current) => ({ ...current, config: { ...current.config, [key]: value } }));
   };
 
-  const handleSave = () => {
-    if (isNew) {
-      if (!widget.name.trim() || !widget.kbId.trim()) return;
-      const newId = makeUniqueId(slugify(widget.name), widgets);
-      const newWidget: Widget = { ...widget, id: newId };
-      const updated = [...widgets, newWidget];
-      saveWidgets(updated);
-      setWidgets(updated);
-    } else {
-      const updated = widgets.map((w) => (w.id === widget.id ? widget : w));
-      saveWidgets(updated);
-      setWidgets(updated);
+  // Speichern, ohne die Karte zu schließen, damit der Nutzer den Chatbot hier
+  // gleich testen kann. Beim Anlegen wechselt die URL auf die Bearbeiten-Route
+  // des neuen Widgets (gleiche Route → Komponente bleibt montiert, `saved` bleibt).
+  const handleSave = async () => {
+    setSaveError(null);
+    try {
+      if (isNew) {
+        if (!widget.name.trim() || !widget.knowledgeBaseId.trim()) return;
+        const newId = makeUniqueId(slugify(widget.name), widgets);
+        const saved = await saveWidget({ ...widget, id: newId });
+        setWidgets((current) => [...current, saved]);
+        setWidget(saved);
+        setSaved(true);
+        navigate(`/widgets/${newId}`, { replace: true });
+      } else {
+        const saved = await saveWidget(widget);
+        setWidgets((current) => current.map((w) => (w.id === saved.id ? saved : w)));
+        setSaved(true);
+      }
+    } catch (err) {
+      setSaveError(err instanceof Error ? err.message : "Speichern fehlgeschlagen");
     }
-    navigate("/");
   };
 
   const handleCopy = async (text: string, kind: "code" | "url") => {
@@ -117,33 +135,42 @@ export function WidgetConfigPage() {
   const previewId = isNew ? slugify(widget.name) : widget.id;
 
   return (
-    <WidgetConfigView
+    <>
+      {saveError ? (
+        <div className="mx-auto mt-4 max-w-container-max px-gutter">
+          <div className="rounded-lg border border-error/40 bg-error/10 px-4 py-3 text-sm text-error">
+            {saveError}
+          </div>
+        </div>
+      ) : null}
+      <WidgetConfigView
       widget={widget}
       isNew={isNew}
       isActive={widget.status === "active"}
-      showApiKey={showApiKey}
+      saved={saved}
       copied={copied}
-      embedCode={buildEmbedCode(previewId, widget.kbId, widget.routing)}
+      embedCode={buildEmbedCode(previewId, widget.knowledgeBaseId, widget.routing)}
       directUrl={buildDirectUrl(previewId)}
       onSave={handleSave}
       onCancel={() => navigate("/")}
-      onToggleStatus={() => {
+      onToggleStatus={async () => {
         const newStatus: WidgetStatus = widget.status === "active" ? "paused" : "active";
-        // Status sofort lokal anzeigen und persistieren (nur das Statusfeld,
-        // sonstige ungespeicherte Änderungen bleiben dem Speichern vorbehalten).
+        // Status sofort lokal anzeigen.
         update("status", newStatus);
-        const updated = widgets.map((w) => (w.id === widget.id ? { ...w, status: newStatus } : w));
-        saveWidgets(updated);
-        setWidgets(updated);
-      }}
-      onToggleShowApiKey={() => setShowApiKey((v) => !v)}
-      onRegenerateApiKey={() => {
-        updateConfig("apiKey", `sk-${crypto.randomUUID().replace(/-/g, "").slice(0, 24)}`);
-        setShowApiKey(true);
+        // Bereits gespeicherte Widgets sofort persistieren; neue (noch ohne ID)
+        // erhalten den Status erst beim Anlegen.
+        if (isNew) return;
+        try {
+          const persisted = await saveWidget({ ...widget, status: newStatus });
+          setWidgets((current) => current.map((w) => (w.id === persisted.id ? persisted : w)));
+        } catch (err) {
+          setSaveError(err instanceof Error ? err.message : "Status konnte nicht gespeichert werden");
+        }
       }}
       onCopy={handleCopy}
       onUpdate={update}
       onUpdateConfig={updateConfig}
-    />
+      />
+    </>
   );
 }
