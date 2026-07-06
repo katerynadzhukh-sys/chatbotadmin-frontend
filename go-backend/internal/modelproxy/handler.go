@@ -66,6 +66,7 @@ func (h *Handler) upstream(ctx context.Context, method, path string, body []byte
 
 type modelInfo struct {
 	ID      string `json:"id"`
+	Name    string `json:"name"`
 	OwnedBy string `json:"ownedBy"`
 	Created int64  `json:"created"`
 }
@@ -86,6 +87,7 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 	var upstream struct {
 		Data []struct {
 			ID      string `json:"id"`
+			Name    string `json:"name"`
 			OwnedBy string `json:"owned_by"`
 			Created int64  `json:"created"`
 		} `json:"data"`
@@ -98,9 +100,19 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 
 	models := make([]modelInfo, 0, len(upstream.Data))
 	for _, m := range upstream.Data {
-		models = append(models, modelInfo{ID: m.ID, OwnedBy: m.OwnedBy, Created: m.Created})
+		models = append(models, modelInfo{ID: m.ID, Name: m.Name, OwnedBy: m.OwnedBy, Created: m.Created})
 	}
-	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
+	// Nach Anzeigename sortieren (fällt auf die ID zurück, falls kein Name).
+	sort.Slice(models, func(i, j int) bool {
+		ni, nj := models[i].Name, models[j].Name
+		if ni == "" {
+			ni = models[i].ID
+		}
+		if nj == "" {
+			nj = models[j].ID
+		}
+		return strings.ToLower(ni) < strings.ToLower(nj)
+	})
 
 	httputil.WriteJSONCtx(r.Context(), w, http.StatusOK, map[string]any{"models": models})
 }

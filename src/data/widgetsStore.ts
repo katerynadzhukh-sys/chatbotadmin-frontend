@@ -47,6 +47,9 @@ export async function fetchWidgets(): Promise<Widget[]> {
     const parsed = JSON.parse(stored) as Widget[];
     return parsed.map((widget) => ({
       ...widget,
+      // Altdaten migrieren: früher hieß das Feld `kbId`. Fehlt beides, "" statt
+      // undefined, damit Consumer (z. B. ModelCombobox) nicht auf undefined stoßen.
+      knowledgeBaseId: widget.knowledgeBaseId ?? (widget as { kbId?: string }).kbId ?? "",
       config: { ...createDefaultConfig(), ...widget.config },
     }));
   } catch {

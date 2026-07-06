@@ -2,6 +2,8 @@ import { apiFetch } from "../auth/api";
 
 export interface LanguageModel {
   id: string;
+  /** Menschenlesbarer Anzeigename der Knowledge-Base (z. B. "PE Programm"). */
+  name?: string;
   ownedBy: string;
   created: number;
 }
