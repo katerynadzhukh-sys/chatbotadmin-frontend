@@ -9,11 +9,11 @@ export function TopAppBar({ title }: TopAppBarProps) {
   const user = useCurrentUser();
 
   return (
-    <header className="bg-surface-container-lowest dark:bg-inverse-surface border-b border-outline-variant dark:border-outline shadow-sm dark:shadow-none top-0 z-40 sticky">
+    <header className="bg-surface-container-lowest border-b border-outline-variant shadow-sm top-0 z-40 sticky">
       <div className="flex justify-between items-center px-gutter py-4 w-full max-w-container-max mx-auto">
         <div className="flex items-center gap-3 lg:hidden">
           <Icon name="smart_toy" className="text-primary dark:text-primary-fixed" style={{ fontSize: 28 }} />
-          <h1 className="text-headline-md-mobile font-headline-md-mobile font-bold text-on-surface dark:text-inverse-on-surface">
+          <h1 className="text-headline-md-mobile font-headline-md-mobile font-bold text-on-surface">
             ChatBot Admin
           </h1>
         </div>

@@ -46,10 +46,10 @@ export function Sidebar({ onLogout }: SidebarProps) {
   const parentClass = (active: boolean) =>
     active
       ? "flex items-center gap-4 px-4 py-3 bg-primary text-on-primary rounded-full transition-all duration-200 ease-in-out"
-      : "flex items-center gap-4 px-4 py-3 text-on-surface-variant dark:text-surface-variant hover:bg-secondary-container dark:hover:bg-secondary rounded-full transition-all duration-200 ease-in-out";
+      : "flex items-center gap-4 px-4 py-3 text-on-surface-variant hover:bg-secondary-container rounded-full transition-all duration-200 ease-in-out";
 
   return (
-    <aside className="hidden lg:flex flex-col w-64 h-screen fixed left-0 top-0 p-4 bg-surface dark:bg-inverse-surface border-r border-outline-variant z-50">
+    <aside className="hidden lg:flex flex-col w-64 h-screen fixed left-0 top-0 p-4 bg-surface-container-low border-r border-outline-variant z-50">
       <div className="flex items-center gap-3 mb-10 px-2">
         <Icon name="smart_toy" className="text-primary" style={{ fontSize: 32 }} />
         <h1 className="text-headline-md font-bold text-primary">ChatBot Admin</h1>
@@ -84,7 +84,7 @@ export function Sidebar({ onLogout }: SidebarProps) {
                     className={
                       active
                         ? "flex items-center gap-3 px-3 py-2 rounded-full bg-secondary-container text-on-secondary-container transition-colors"
-                        : "flex items-center gap-3 px-3 py-2 rounded-full text-on-surface-variant dark:text-surface-variant hover:bg-secondary-container dark:hover:bg-secondary transition-colors"
+                        : "flex items-center gap-3 px-3 py-2 rounded-full text-on-surface-variant hover:bg-secondary-container transition-colors"
                     }
                   >
                     <WidgetIcon name={widget.icon} size={18} className="shrink-0" />
