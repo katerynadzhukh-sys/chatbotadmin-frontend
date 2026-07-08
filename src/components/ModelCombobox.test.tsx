@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { render, screen, waitFor } from "@testing-library/react";
+import { act, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { ModelCombobox } from "./ModelCombobox";
 
@@ -12,10 +12,14 @@ vi.mock("../data/models", () => ({
 }));
 
 describe("ModelCombobox", () => {
-  it("stürzt bei undefined value nicht ab und zeigt ein leeres Feld", () => {
+  it("stürzt bei undefined value nicht ab und zeigt ein leeres Feld", async () => {
     render(
       <ModelCombobox value={undefined as unknown as string} onChange={() => {}} />,
     );
+    // ModelCombobox lädt die Modelle in einem Effekt (fetchModels, gemockt). Den
+    // dadurch ausgelösten State-Update in act() abschließen, sonst warnt React
+    // "update ... was not wrapped in act(...)". Der Feldwert bleibt leer.
+    await act(async () => {});
     expect(screen.getByRole("combobox")).toHaveValue("");
   });
 
