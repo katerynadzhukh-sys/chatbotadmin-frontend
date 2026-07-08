@@ -21,6 +21,7 @@ import (
 	"github.com/stenseegel/chatbotadmin-backend/internal/modelproxy"
 	"github.com/stenseegel/chatbotadmin-backend/internal/redisclient"
 	"github.com/stenseegel/chatbotadmin-backend/internal/users"
+	"github.com/stenseegel/chatbotadmin-backend/internal/widgets"
 )
 
 // RunServer builds dependencies and serves until SIGINT/SIGTERM.
@@ -60,11 +61,14 @@ func RunServer(cfg *config.Config, version string) error {
 	apiKeyMW := apikeyauth.NewMiddleware(apikeyauth.NewStore(pool))
 
 	proxyH := modelproxy.NewHandler(cfg.KIAPIKey, cfg.KIBaseURL)
+	// The public per-widget chat endpoint proxies to the same upstream LLM.
+	widgetsH := widgets.NewHandler(widgets.NewStore(pool), proxyH)
 
 	mux := newRouter(routerDeps{
 		auth:     authH,
 		users:    usersH,
 		apiKeys:  apiKeysH,
+		widgets:  widgetsH,
 		proxy:    proxyH,
 		jwtMW:    jwtMW,
 		apiKeyMW: apiKeyMW,

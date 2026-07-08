@@ -121,44 +121,52 @@ func (h *Handler) ListModels(w http.ResponseWriter, r *http.Request) {
 // POST /api/chat
 // ---------------------------------------------------------------------------
 
-type chatMessage struct {
+// ChatMessage is one turn in a chat completion (role + content).
+type ChatMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
 type chatRequest struct {
-	Model     string        `json:"model"`
-	Messages  []chatMessage `json:"messages"`
-	MaxTokens int           `json:"maxTokens"`
-	Stream    bool          `json:"stream"`
+	Model string `json:"model"`
+	// knowledgeBaseId is the field the embedded widget/admin send; it aliases
+	// Model so callers can use either name.
+	KnowledgeBaseID string        `json:"knowledgeBaseId"`
+	Messages        []ChatMessage `json:"messages"`
+	MaxTokens       int           `json:"maxTokens"`
+	Stream          bool          `json:"stream"`
+}
+
+// ChatParams is a chat request whose model and token cap have already been
+// resolved from trusted state (the admin's selection, or a widget's stored
+// config) rather than taken verbatim from an untrusted client.
+type ChatParams struct {
+	Model     string
+	MaxTokens *int
+	Messages  []ChatMessage
+	Stream    bool
 }
 
 // upstreamChatRequest is the OpenAI-shaped body sent to the HRZ endpoint.
 type upstreamChatRequest struct {
 	Model     string        `json:"model"`
-	Messages  []chatMessage `json:"messages"`
+	Messages  []ChatMessage `json:"messages"`
 	MaxTokens *int          `json:"max_tokens,omitempty"`
 	Stream    bool          `json:"stream"`
 }
 
-// Chat handles POST /api/chat (streaming and non-streaming).
+// Chat handles POST /api/chat (streaming and non-streaming) for authenticated
+// callers, taking the model + token cap directly from the request body.
 func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
-	if !h.configured(w, r) {
-		return
-	}
-
 	var req chatRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		httputil.WriteJSONCtx(r.Context(), w, http.StatusBadRequest, map[string]string{"error": "Ungültiger Request"})
 		return
 	}
-	if req.Model == "" {
-		httputil.WriteJSONCtx(r.Context(), w, http.StatusBadRequest, map[string]string{"error": "Kein Modell ausgewählt."})
-		return
-	}
-	if len(req.Messages) == 0 {
-		httputil.WriteJSONCtx(r.Context(), w, http.StatusBadRequest, map[string]string{"error": "Keine Nachrichten übergeben."})
-		return
+
+	model := req.Model
+	if model == "" {
+		model = req.KnowledgeBaseID
 	}
 
 	var maxTokens *int
@@ -167,18 +175,42 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		maxTokens = &mt
 	}
 
-	body, err := json.Marshal(upstreamChatRequest{
-		Model:     req.Model,
-		Messages:  req.Messages,
+	h.ProxyChat(w, r, ChatParams{
+		Model:     model,
 		MaxTokens: maxTokens,
+		Messages:  req.Messages,
 		Stream:    req.Stream,
+	})
+}
+
+// ProxyChat validates already-resolved params and proxies them to the upstream
+// LLM. Callers (the authenticated /api/chat handler and the public per-widget
+// chat handler) resolve Model/MaxTokens from trusted state before calling this.
+func (h *Handler) ProxyChat(w http.ResponseWriter, r *http.Request, p ChatParams) {
+	if !h.configured(w, r) {
+		return
+	}
+	if p.Model == "" {
+		httputil.WriteJSONCtx(r.Context(), w, http.StatusBadRequest, map[string]string{"error": "Kein Modell ausgewählt."})
+		return
+	}
+	if len(p.Messages) == 0 {
+		httputil.WriteJSONCtx(r.Context(), w, http.StatusBadRequest, map[string]string{"error": "Keine Nachrichten übergeben."})
+		return
+	}
+
+	body, err := json.Marshal(upstreamChatRequest{
+		Model:     p.Model,
+		Messages:  p.Messages,
+		MaxTokens: p.MaxTokens,
+		Stream:    p.Stream,
 	})
 	if err != nil {
 		httputil.WriteJSONCtx(r.Context(), w, http.StatusInternalServerError, map[string]string{"error": "Request konnte nicht erstellt werden."})
 		return
 	}
 
-	if req.Stream {
+	if p.Stream {
 		h.chatStream(w, r, body)
 		return
 	}

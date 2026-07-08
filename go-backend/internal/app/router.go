@@ -10,12 +10,14 @@ import (
 	"github.com/stenseegel/chatbotadmin-backend/internal/authhandler"
 	"github.com/stenseegel/chatbotadmin-backend/internal/modelproxy"
 	"github.com/stenseegel/chatbotadmin-backend/internal/users"
+	"github.com/stenseegel/chatbotadmin-backend/internal/widgets"
 )
 
 type routerDeps struct {
 	auth     *authhandler.Handler
 	users    *users.Handler
 	apiKeys  *apikeys.Handler
+	widgets  *widgets.Handler
 	proxy    *modelproxy.Handler
 	jwtMW    *auth.Middleware
 	apiKeyMW *apikeyauth.Middleware
@@ -58,6 +60,18 @@ func newRouter(d routerDeps) *http.ServeMux {
 	mux.Handle("POST /api/api-keys", jwt(d.apiKeys.CreateApiKey))
 	mux.Handle("GET /api/api-keys", jwt(d.apiKeys.ListApiKeys))
 	mux.Handle("DELETE /api/api-keys/{id}", jwt(d.apiKeys.DeleteApiKey))
+
+	// ---- widgets -------------------------------------------------------------
+	// List + upsert are admin operations (JWT). The single-widget GET is PUBLIC:
+	// the embedded widget.js fetches it cross-origin and unauthenticated, so it
+	// must not require a token (it returns only the reduced public config).
+	mux.Handle("GET /api/widgets", jwt(d.widgets.List))
+	mux.Handle("PUT /api/widgets/{id}", jwt(d.widgets.Upsert))
+	mux.HandleFunc("GET /api/widgets/{id}", d.widgets.PublicConfig)
+	// PUBLIC: the embedded widget.js is anonymous, so per-widget chat is not
+	// behind auth. It is scoped to the widget's stored model/limits and
+	// rate-limited per IP inside the handler.
+	mux.HandleFunc("POST /api/widgets/{id}/chat", d.widgets.Chat)
 
 	// ---- model proxy (JWT or API key) ----------------------------------------
 	// The browser admin UI calls these with its JWT; programmatic callers may
