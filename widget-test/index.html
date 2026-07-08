@@ -488,19 +488,7 @@
       <input type="text" id="custom-widget-id" placeholder="z.B. my-custom-bot">
     </div>
 
-    <div class="control-group">
-      <label for="kb-id">Knowledge-Base-ID</label>
-      <input type="text" id="kb-id" value="jlu-public-2024" placeholder="z.B. jlu-public-2024">
-    </div>
 
-    <div class="control-group">
-      <label for="widget-routing">Routing</label>
-      <select id="widget-routing">
-        <option value="public" selected>public</option>
-        <option value="internal">internal</option>
-        <option value="private">private</option>
-      </select>
-    </div>
 
     <button class="btn-reload" id="btn-reload-widget">
       <span class="material-symbols-outlined">refresh</span>
@@ -711,6 +699,8 @@
         localStorage.setItem(TOKEN_KEY, data.token);
         localStorage.setItem(USER_KEY, JSON.stringify(data.user));
         authOverlay.style.display = 'none';
+        await populateWidgetList();
+        applyWidgetParam();
         loadWidget();
       } catch (_) {
         showAuthError('Backend nicht erreichbar — läuft der Server unter ' + getServerOrigin() + '?');
@@ -751,8 +741,6 @@
     const widgetIdSelect = document.getElementById('widget-id');
     const customWidgetIdGroup = document.getElementById('custom-widget-id-group');
     const customWidgetIdInput = document.getElementById('custom-widget-id');
-    const kbIdInput = document.getElementById('kb-id');
-    const routingSelect = document.getElementById('widget-routing');
     const btnReload = document.getElementById('btn-reload-widget');
 
     // Auto toggle custom widget id input
@@ -787,8 +775,6 @@
 
       // 2. Extract configuration & rebuild passive placeholder div
       const origin = serverOriginInput.value.trim() || 'http://localhost:8080';
-      const kb = kbIdInput.value.trim();
-      const routing = routingSelect.value;
 
       // Clear and rebuild the passive placeholder container
       const targetRoot = document.getElementById('chatbot-root');
@@ -797,8 +783,6 @@
       const placeholder = document.createElement('div');
       placeholder.className = 'chatbot-widget';
       placeholder.setAttribute('data-widget-id', activeWidgetId);
-      placeholder.setAttribute('data-kb', kb);
-      placeholder.setAttribute('data-routing', `${routing}-widget`);
       placeholder.setAttribute('data-lang', 'de');
       targetRoot.appendChild(placeholder);
 
@@ -839,14 +823,76 @@
         : `http://${window.location.hostname}:5173`;
     }
 
-    // Bind event
-    btnReload.addEventListener('click', loadWidget);
+    // A stale session — e.g. after a backend restart, which rejects tokens
+    // issued before its boot — makes authenticated calls return 401. Drop the
+    // token, clear any half-loaded widget, and show the login overlay so the
+    // tester re-authenticates, instead of silently leaving a broken session.
+    function handleSessionExpired() {
+      localStorage.removeItem(TOKEN_KEY);
+      localStorage.removeItem(USER_KEY);
+      const script = document.getElementById('dynamically-loaded-widget-script');
+      if (script) script.remove();
+      const wrapper = document.querySelector('.chatbot-widget-wrapper');
+      if (wrapper) wrapper.remove();
+      document.getElementById('chatbot-root').innerHTML = '';
+      authOverlay.style.display = 'flex';
+      initAuthMode();
+    }
+
+    // Populate the Widget ID dropdown from the backend so every widget created
+    // in the admin appears here automatically (the static <option>s are only a
+    // fallback). GET /api/widgets is admin-only, so a session token is required.
+    // A 401 means the session expired → prompt re-login; any other failure
+    // leaves the current list untouched. Keeps the current selection and the
+    // trailing "Benutzerdefiniert..." escape hatch.
+    async function populateWidgetList() {
+      const token = localStorage.getItem(TOKEN_KEY);
+      if (!token) return;
+      let widgets;
+      try {
+        const res = await fetch(getServerOrigin() + '/api/widgets', {
+          headers: { Authorization: 'Bearer ' + token },
+        });
+        if (res.status === 401) { handleSessionExpired(); return; }
+        if (!res.ok) return;
+        widgets = (await res.json()).widgets;
+      } catch (_) { return; }
+      if (!Array.isArray(widgets)) return;
+
+      const previous = widgetIdSelect.value;
+      widgetIdSelect.innerHTML = '';
+      widgets
+        .slice()
+        .sort((a, b) => (a.name || a.id).localeCompare(b.name || b.id))
+        .forEach((w) => {
+          const opt = document.createElement('option');
+          opt.value = w.id;
+          opt.textContent = w.name ? `${w.id} (${w.name})` : w.id;
+          widgetIdSelect.appendChild(opt);
+        });
+      const custom = document.createElement('option');
+      custom.value = 'custom';
+      custom.textContent = 'Benutzerdefiniert...';
+      widgetIdSelect.appendChild(custom);
+
+      // Restore the prior selection if it still exists.
+      if ([...widgetIdSelect.options].some((o) => o.value === previous)) {
+        widgetIdSelect.value = previous;
+      }
+      customWidgetIdGroup.style.display = widgetIdSelect.value === 'custom' ? 'block' : 'none';
+    }
+
+    // Bind event: refresh the list first so a just-created widget shows up.
+    btnReload.addEventListener('click', async () => {
+      await populateWidgetList();
+      loadWidget();
+    });
 
     // Auth bootstrap (runs now that getServerOrigin() has a value): decide what
     // the overlay shows, mirroring the admin login config.
     if (handleOidcCallback()) {
-      // Session captured from the SSO round-trip; the widget loads via
-      // DOMContentLoaded below.
+      // Session captured from the SSO round-trip; the widget list + widget load
+      // via DOMContentLoaded below.
     } else {
       const oidcErr = new URLSearchParams(window.location.search).get('oidc_error');
       if (oidcErr) showAuthError('SSO-Anmeldung fehlgeschlagen (' + oidcErr + ')');
@@ -858,10 +904,31 @@
       }
     }
 
-    // Initial load on startup
+    // Preselect the widget named in ?widget=<id> (e.g. deep-linked from the
+    // admin's "Testseite öffnen"). Falls back to the custom-id field if the id
+    // is not in the list (e.g. not signed in yet, so only the static options).
+    function applyWidgetParam() {
+      const wanted = new URLSearchParams(window.location.search).get('widget');
+      if (!wanted) return;
+      if ([...widgetIdSelect.options].some((o) => o.value === wanted)) {
+        widgetIdSelect.value = wanted;
+        customWidgetIdGroup.style.display = 'none';
+      } else {
+        widgetIdSelect.value = 'custom';
+        customWidgetIdInput.value = wanted;
+        customWidgetIdGroup.style.display = 'block';
+      }
+    }
+
+    // Initial load on startup: fill the dropdown from the backend (if signed in),
+    // honour ?widget=, then load the selected widget.
     window.addEventListener('DOMContentLoaded', () => {
       // Small delay to ensure page rendering
-      setTimeout(loadWidget, 500);
+      setTimeout(async () => {
+        await populateWidgetList();
+        applyWidgetParam();
+        loadWidget();
+      }, 500);
     });
   </script>
 </body>

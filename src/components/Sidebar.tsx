@@ -5,23 +5,11 @@ import { Icon } from "./Icon";
 import { WidgetIcon } from "./WidgetIcon";
 import { ThemeToggle } from "@/components/ui/theme-toggle";
 import { fetchWidgets } from "../data/widgetsStore";
+import { resolveWidgetPortalUrl } from "../lib/widgetPortal";
 import type { Widget } from "../types/widget";
 
 interface SidebarProps {
   onLogout: () => void;
-}
-
-/**
- * URL of the mock widget portal — the standalone site that embeds the widget.
- * It must live on a DIFFERENT origin than the admin UI so it exercises the real
- * cross-origin embed + login path.
- */
-function resolveWidgetPortalUrl(): string {
-  const override = import.meta.env.VITE_WIDGET_PORTAL_URL;
-  if (override) return override;
-  const { protocol, hostname } = window.location;
-  const port = protocol === "https:" ? "6443" : "8082";
-  return `${protocol}//${hostname}:${port}/`;
 }
 
 export function Sidebar({ onLogout }: SidebarProps) {
