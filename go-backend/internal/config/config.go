@@ -141,13 +141,10 @@ func Load() (*Config, error) {
 
 	cfg.AllowedOrigins = splitNonEmpty(os.Getenv("ALLOWED_ORIGINS"))
 	if len(cfg.AllowedOrigins) == 0 && !isProd {
-		// Dev fallback so the Vite dev server (5173), the built SPA (8081), and
-		// the widget mock-portal (8082, which logs in cross-origin to 8081) all
-		// work out of the box.
+		// Dev fallback so the Vite dev server (5173) and the widget mock-portal
+		// (8082, which logs in cross-origin to the admin) work out of the box.
 		cfg.AllowedOrigins = []string{
 			"http://localhost:5173",
-			"http://localhost:3000",
-			"http://localhost:8081",
 			"http://localhost:8082",
 		}
 	}

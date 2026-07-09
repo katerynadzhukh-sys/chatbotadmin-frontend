@@ -54,17 +54,9 @@ func (c *Client) Ping(ctx context.Context) error {
 	return c.Client.Ping(ctx).Err()
 }
 
-func (c *Client) Options() *redis.Options {
-	return c.Client.Options()
-}
-
 func (c *Client) Close() error {
 	slog.Info("closing Redis connection")
 	return c.Client.Close()
-}
-
-func (c *Client) NewPubSubConn(ctx context.Context) *redis.PubSub {
-	return c.Client.Subscribe(ctx)
 }
 
 // BlacklistAdapter wraps Client to satisfy the auth.BlacklistStore interface.
