@@ -10,8 +10,8 @@ export function AddWidgetCard() {
       <div className="w-12 h-12 rounded-full border-2 border-dashed border-current flex items-center justify-center mb-3 group-hover:scale-110 transition-transform">
         <Icon name="add" className="text-[28px]" />
       </div>
-      <span className="font-headline-md text-base font-bold">Widget hinzufügen</span>
-      <p className="text-xs mt-1 opacity-70 text-center">Erstellen Sie einen neuen Bot</p>
+      <span className="font-headline-md text-base font-bold">Konnektor hinzufügen</span>
+      <p className="text-xs mt-1 opacity-70 text-center">Neuen Front (Widget) anlegen</p>
     </Link>
   );
 }

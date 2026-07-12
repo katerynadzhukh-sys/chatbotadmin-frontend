@@ -106,8 +106,8 @@ export function Sidebar({ onLogout }: SidebarProps) {
             }}
             className={`${parentClass(widgetsActive)} w-full`}
           >
-            <Icon name="grid_view" />
-            <span className={widgetsActive ? "font-label-sm" : "font-body-base"}>Widgets</span>
+            <Icon name="hub" />
+            <span className={widgetsActive ? "font-label-sm" : "font-body-base"}>Konnektoren</span>
             <Icon
               name="expand_more"
               className={`ml-auto shrink-0 transition-transform duration-200 ${widgetsOpen ? "rotate-180" : ""}`}

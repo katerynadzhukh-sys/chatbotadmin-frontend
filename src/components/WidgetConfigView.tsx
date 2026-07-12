@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState, type CSSProperties } from "react";
+import { Link } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { FormControl, FormItem, FormLabel } from "@/components/ui/form";
@@ -6,12 +7,12 @@ import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Icon } from "./Icon";
 import { Markdown } from "./Markdown";
-import { ModelCombobox } from "./ModelCombobox";
 import { Toggle } from "./Toggle";
 import { ICON_OPTIONS, POSITION_OPTIONS } from "./widgetOptions";
 import { WidgetIcon } from "./WidgetIcon";
 import { streamChatMessage, type ChatMessage } from "../data/chat";
-import type { Widget, WidgetPosition, WidgetRule } from "../types/widget";
+import type { Widget, WidgetPosition } from "../types/widget";
+import type { Agent } from "../types/agent";
 
 interface PreviewMessage {
   role: "bot" | "user";
@@ -29,10 +30,12 @@ const RATE_SLIDERS = [
 
 export interface WidgetConfigViewProps {
   widget: Widget;
+  /** Verfügbare Agenten (Ebene 1) für die Auswahl. Der Konnektor verweist nur per agentId. */
+  agents: Agent[];
   isNew: boolean;
   isActive: boolean;
   saved: boolean;
-  /** Nur Superadmins dürfen ein Widget löschen – blendet den Löschen-Button ein. */
+  /** Nur Superadmins dürfen einen Konnektor löschen – blendet den Löschen-Button ein. */
   canDelete: boolean;
   copied: "code" | "url" | null;
   embedCode: string;
@@ -48,6 +51,7 @@ export interface WidgetConfigViewProps {
 
 export function WidgetConfigView({
   widget,
+  agents,
   isNew,
   isActive,
   saved,
@@ -63,6 +67,10 @@ export function WidgetConfigView({
   onUpdate,
   onUpdateConfig,
 }: WidgetConfigViewProps) {
+  // Der verknüpfte Agent (Ebene 1) liefert die Denkschicht: Modell, System-Prompt,
+  // Regeln, Token-Limit. Der Konnektor verweist nur per agentId darauf.
+  const selectedAgent = agents.find((a) => a.id === widget.agentId) ?? null;
+
   const [previewMessages, setPreviewMessages] = useState<PreviewMessage[]>(() => [
     { role: "bot", text: widget.config.greeting || "Hallo! Wie kann ich dir helfen?" },
   ]);
@@ -70,7 +78,7 @@ export function WidgetConfigView({
   const [previewTyping, setPreviewTyping] = useState(false);
   // Vorschau zeigt zunächst nur den Chat-Button; erst per Klick öffnet sich das Fenster.
   const [previewOpen, setPreviewOpen] = useState(false);
-  // Grundeinstellungen sind beim Erstellen offen, bei bestehenden Widgets eingeklappt.
+  // Grundeinstellungen sind beim Erstellen offen, bei bestehenden Konnektoren eingeklappt.
   const [basicsOpen, setBasicsOpen] = useState(isNew);
 
   // Position von Button und Fenster innerhalb der Vorschau (laut Einstellung).
@@ -80,9 +88,7 @@ export function WidgetConfigView({
     : widget.config.position === "top-right" ? "top-3 right-3"
     : "top-3 left-3";
 
-  // Begrüßungstext live in der Vorschau spiegeln, solange noch kein Gespräch
-  // läuft. React-Muster „State beim Prop-Wechsel anpassen“ (setState im Render,
-  // nicht im Effekt): https://react.dev/learn/you-might-not-need-an-effect
+  // Begrüßungstext live in der Vorschau spiegeln, solange noch kein Gespräch läuft.
   const greeting = widget.config.greeting || "Hallo! Wie kann ich dir helfen?";
   const [prevGreeting, setPrevGreeting] = useState(greeting);
   if (greeting !== prevGreeting) {
@@ -99,17 +105,17 @@ export function WidgetConfigView({
     if (el) el.scrollTop = el.scrollHeight;
   }, [previewMessages, previewTyping]);
 
-  // Laufenden Vorschau-Stream abbrechen können (bei Reset/Unmount), damit späte
-  // Tokens nicht mehr in eine bereits ersetzte Bubble geschrieben werden.
+  // Laufenden Vorschau-Stream abbrechen können (bei Reset/Unmount).
   const previewAbortRef = useRef<AbortController | null>(null);
   useEffect(() => () => previewAbortRef.current?.abort(), []);
 
-  // System-Prompt aus Start-Prompt + aktiven Regeln zusammenbauen.
+  // System-Prompt aus dem AGENTEN (System-Prompt + aktive Regeln) zusammenbauen.
   const buildSystemPrompt = (): string => {
+    if (!selectedAgent) return "";
     const parts: string[] = [];
-    if (widget.config.startPrompt.trim()) parts.push(widget.config.startPrompt.trim());
+    if (selectedAgent.systemPrompt.trim()) parts.push(selectedAgent.systemPrompt.trim());
 
-    const activeRules = widget.config.rules
+    const activeRules = selectedAgent.rules
       .filter((r) => r.enabled && r.text.trim())
       .map((r) => `- ${r.text.trim()}`);
     if (activeRules.length) parts.push(`Regeln:\n${activeRules.join("\n")}`);
@@ -121,37 +127,30 @@ export function WidgetConfigView({
     const trimmed = text.trim();
     if (!trimmed || previewTyping) return;
 
-    const knowledgeBaseId = widget.knowledgeBaseId.trim();
+    const model = selectedAgent?.model.trim() ?? "";
     const history: PreviewMessage[] = [...previewMessages, { role: "user", text: trimmed }];
     setPreviewMessages(history);
     setPreviewDraft("");
 
-    if (!knowledgeBaseId) {
+    if (!model) {
       setPreviewMessages((msgs) => [
         ...msgs,
-        { role: "bot", text: "⚠️ Bitte zuerst eine Knowledge-Base-ID angeben.", notice: true },
+        { role: "bot", text: "⚠️ Bitte zuerst einen Agenten mit Modell auswählen.", notice: true },
       ]);
       return;
     }
 
     setPreviewTyping(true);
-
-    // Vorherigen Stream (falls noch aktiv) abbrechen und Controller für diesen anlegen.
     previewAbortRef.current?.abort();
     const controller = new AbortController();
     previewAbortRef.current = controller;
 
-    // Beim ersten Token die Schreib-Animation durch eine echte Bot-Bubble ersetzen,
-    // danach diese Bubble Token für Token verlängern. Der Updater muss rein sein
-    // (StrictMode ruft ihn doppelt auf), daher leiten wir alles aus `msgs` ab.
     const appendToken = (chunk: string) => {
-      // Nach Abbruch (z. B. Reset) keine Tokens mehr anhängen — sonst landen sie
-      // in der frisch gesetzten Begrüßungs-Bubble.
       if (controller.signal.aborted) return;
       setPreviewTyping(false);
       setPreviewMessages((msgs) => {
         const last = msgs[msgs.length - 1];
-        if (last?.role === "bot") {
+        if (last?.role === "bot" && !last.notice) {
           const copy = [...msgs];
           copy[copy.length - 1] = { ...last, text: last.text + chunk };
           return copy;
@@ -164,7 +163,6 @@ export function WidgetConfigView({
       const messages: ChatMessage[] = [];
       const system = buildSystemPrompt();
       if (system) messages.push({ role: "system", content: system });
-      // UI-Hinweise (Fehler/leer) gehören nicht in den Gesprächsverlauf.
       for (const m of history) {
         if (m.notice) continue;
         messages.push({ role: m.role === "user" ? "user" : "assistant", content: m.text });
@@ -172,28 +170,25 @@ export function WidgetConfigView({
 
       const { reply, finishReason } = await streamChatMessage(
         {
-          knowledgeBaseId,
+          knowledgeBaseId: model,
           messages,
-          maxTokens: widget.config.maxTokensPerAnswer,
+          maxTokens: selectedAgent?.maxTokens,
           signal: controller.signal,
           widgetId: widget.id,
         },
         appendToken,
       );
 
-      // Nach Abbruch (Reset) das Ergebnis dieses Streams verwerfen.
       if (controller.signal.aborted) return;
 
-      // Kein Inhalt gestreamt (z. B. Token-Limit bei Reasoning-Modellen).
       if (!reply.trim()) {
         const text =
           finishReason === "length"
-            ? "⚠️ Token-Limit erreicht, bevor eine Antwort generiert wurde. Erhöhe „Max. Tokens pro Antwort“."
+            ? "⚠️ Token-Limit erreicht, bevor eine Antwort generiert wurde. Erhöhe den Wert im Agenten."
             : "(leere Antwort)";
         setPreviewMessages((msgs) => [...msgs, { role: "bot", text, notice: true }]);
       }
     } catch (err) {
-      // Abbruch (Reset/Unmount) ist kein Fehler — keine Hinweis-Bubble anzeigen.
       if (controller.signal.aborted) return;
       const message = err instanceof Error ? err.message : "Unbekannter Fehler";
       setPreviewMessages((msgs) => [...msgs, { role: "bot", text: `⚠️ ${message}`, notice: true }]);
@@ -203,7 +198,6 @@ export function WidgetConfigView({
   };
 
   const handlePreviewReset = () => {
-    // Laufenden Stream stoppen, damit seine Tokens nicht in die neue Begrüßung fließen.
     previewAbortRef.current?.abort();
     setPreviewMessages([
       { role: "bot", text: widget.config.greeting || "Hallo! Wie kann ich dir helfen?" },
@@ -239,7 +233,7 @@ export function WidgetConfigView({
             <div className="min-w-0">
               {isNew ? (
                 <h2 className="font-headline-md text-headline-md text-on-surface">
-                  Neues Widget erstellen
+                  Neuen Konnektor erstellen
                 </h2>
               ) : (
                 <>
@@ -259,7 +253,7 @@ export function WidgetConfigView({
                     </span>
                   </div>
                   <p className="font-mono text-xs text-on-surface-variant truncate">
-                    Widget-ID: {widget.id}
+                    Konnektor · Typ: Widget · ID: {widget.id}
                   </p>
                 </>
               )}
@@ -272,7 +266,7 @@ export function WidgetConfigView({
                 onClick={() => {
                   if (
                     window.confirm(
-                      `Widget „${widget.name}“ endgültig löschen? Diese Aktion kann nicht rückgängig gemacht werden.`,
+                      `Konnektor „${widget.name}“ endgültig löschen? Diese Aktion kann nicht rückgängig gemacht werden.`,
                     )
                   ) {
                     onDelete();
@@ -281,7 +275,7 @@ export function WidgetConfigView({
                 className="flex items-center gap-2 px-4 py-2 border rounded-lg font-label-sm text-label-sm transition-colors border-error text-error hover:bg-error hover:text-on-error"
               >
                 <Icon name="delete" className="text-[18px]" />
-                Widget löschen
+                Konnektor löschen
               </button>
             )}
             {!isNew && (
@@ -294,7 +288,7 @@ export function WidgetConfigView({
                 }`}
               >
                 <Icon name={isActive ? "pause_circle" : "play_circle"} className="text-[18px]" />
-                {isActive ? "Widget deaktivieren" : "Widget aktivieren"}
+                {isActive ? "Konnektor deaktivieren" : "Konnektor aktivieren"}
               </button>
             )}
             <Button variant="outline" onClick={onCancel}>
@@ -302,7 +296,7 @@ export function WidgetConfigView({
             </Button>
             <Button
               onClick={onSave}
-              disabled={saved || (isNew && (!widget.name.trim() || !widget.knowledgeBaseId.trim()))}
+              disabled={saved || (isNew && (!widget.name.trim() || !widget.agentId))}
               className="shadow-sm"
             >
               {saved ? "Gespeichert" : isNew ? "Erstellen" : "Speichern"}
@@ -317,7 +311,7 @@ export function WidgetConfigView({
         {/* Left column */}
         <div className="lg:col-span-2 space-y-stack-lg">
 
-          {/* Grundeinstellungen — beim Erstellen offen, bei bestehenden Widgets einklappbar */}
+          {/* Grundeinstellungen — beim Erstellen offen, bei bestehenden Konnektoren einklappbar */}
           <Card className="p-6 space-y-stack-sm">
             {isNew ? (
               <h3 className="font-headline-md text-base font-bold flex items-center gap-2">
@@ -353,9 +347,7 @@ export function WidgetConfigView({
                       value={widget.name}
                       onChange={(e) => {
                         const newName = e.target.value;
-                        // Titel automatisch mitführen, solange er nicht manuell
-                        // angepasst wurde (noch Standardwert "ChatBot", leer, oder
-                        // identisch mit dem bisherigen Namen).
+                        // Titel automatisch mitführen, solange er nicht manuell angepasst wurde.
                         const titleUntouched =
                           widget.config.title === "" ||
                           widget.config.title === "ChatBot" ||
@@ -368,58 +360,72 @@ export function WidgetConfigView({
                   </FormControl>
                 </FormItem>
 
-                <div className="grid grid-cols-1 sm:grid-cols-2 gap-stack-sm">
-                  <div className="flex flex-col gap-1">
-                    <Label htmlFor="widget-kb">
-                      Knowledge-Base-ID <span className="text-error">*</span>
-                    </Label>
-                    <ModelCombobox
-                      id="widget-kb"
-                      value={widget.knowledgeBaseId}
-                      onChange={(value) => onUpdate("knowledgeBaseId", value)}
-                      placeholder="Knowledge-Base-ID eingeben…"
-                      className="w-full px-4 py-2 bg-surface border border-outline-variant rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
-                    />
-                  </div>
-                  <div className="flex flex-col gap-1">
-                    <Label htmlFor="widget-routing">
-                      Routing
-                    </Label>
-                    <select
-                      id="widget-routing"
-                      value={widget.routing}
-                      onChange={(e) => onUpdate("routing", e.target.value)}
-                      className="w-full px-4 py-2 bg-surface border border-outline-variant rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
-                    >
-                      <option value="public">public</option>
-                      <option value="internal">internal</option>
-                      <option value="private">private</option>
-                    </select>
-                  </div>
+                {/* Agent-Auswahl (Ebene 1) — ersetzt das frühere Feld „Knowledge-Base-ID". */}
+                <div className="flex flex-col gap-1">
+                  <Label htmlFor="widget-agent">
+                    Agent <span className="text-error">*</span>
+                  </Label>
+                  {agents.length === 0 ? (
+                    <p className="text-sm text-on-surface-variant">
+                      Noch keine Agenten vorhanden.{" "}
+                      <Link to="/agents/new" className="text-primary hover:underline">
+                        Jetzt einen anlegen
+                      </Link>
+                      .
+                    </p>
+                  ) : (
+                    <>
+                      <select
+                        id="widget-agent"
+                        value={widget.agentId ?? ""}
+                        onChange={(e) => onUpdate("agentId", e.target.value)}
+                        className="w-full px-4 py-2 bg-surface border border-outline-variant rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
+                      >
+                        <option value="" disabled>
+                          — Agent wählen —
+                        </option>
+                        {agents.map((a) => (
+                          <option key={a.id} value={a.id}>
+                            {a.name || "(ohne Namen)"}{a.model ? ` · ${a.model}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                      <p className="text-xs text-on-surface-variant flex items-center gap-1">
+                        <Icon name="psychology" className="text-[14px]" />
+                        Die Denkschicht (Modell, System-Prompt, Regeln) kommt aus dem Agenten.
+                        {selectedAgent && (
+                          <Link to={`/agents/${selectedAgent.id}`} className="text-primary hover:underline">
+                            „{selectedAgent.name}" bearbeiten
+                          </Link>
+                        )}
+                      </p>
+                    </>
+                  )}
+                </div>
+
+                <div className="flex flex-col gap-1">
+                  <Label htmlFor="widget-routing">Routing</Label>
+                  <select
+                    id="widget-routing"
+                    value={widget.routing}
+                    onChange={(e) => onUpdate("routing", e.target.value)}
+                    className="w-full px-4 py-2 bg-surface border border-outline-variant rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all"
+                  >
+                    <option value="public">public</option>
+                    <option value="internal">internal</option>
+                    <option value="private">private</option>
+                  </select>
                 </div>
               </>
             )}
           </Card>
 
-          {/* Gesprächseinstellungen */}
+          {/* Vorlagen & Verhalten des Konnektors — Front-Belange (nicht Agent-Verhalten) */}
           <Card className="p-6 space-y-stack-sm">
             <h3 className="font-headline-md text-base font-bold flex items-center gap-2">
               <Icon name="forum" className="text-primary" />
-              Gesprächseinstellungen
+              Vorlagen &amp; Verhalten
             </h3>
-
-            <div className="flex flex-col gap-1">
-              <Label htmlFor="start-prompt">
-                Start-Prompt
-              </Label>
-              <textarea
-                id="start-prompt"
-                rows={4}
-                value={widget.config.startPrompt}
-                onChange={(e) => onUpdateConfig("startPrompt", e.target.value)}
-                className="w-full px-4 py-3 bg-surface border border-outline-variant rounded-lg focus:ring-2 focus:ring-primary focus:border-primary outline-none transition-all text-sm resize-y"
-              />
-            </div>
 
             {/* Vorlagen */}
             <div className="flex flex-col gap-2">
@@ -443,7 +449,7 @@ export function WidgetConfigView({
 
               {widget.config.templates.length === 0 ? (
                 <p className="text-xs text-on-surface-variant/60 italic">
-                  Keine Vorlagen. Nutzer sehen keine Vorschlagchips im Widget.
+                  Keine Vorlagen. Nutzer sehen keine Vorschlagchips im Konnektor.
                 </p>
               ) : (
                 <div className="flex flex-col gap-2">
@@ -475,77 +481,22 @@ export function WidgetConfigView({
               )}
             </div>
 
-            {/* Regeln */}
-            <div className="flex flex-col gap-2">
-              <div className="flex items-center justify-between">
-                <Label>Regeln</Label>
-                <button
-                  type="button"
-                  onClick={() =>
-                    onUpdateConfig("rules", [
-                      ...widget.config.rules,
-                      { text: "", enabled: true } satisfies WidgetRule,
-                    ])
-                  }
-                  className="flex items-center gap-1 text-xs text-primary hover:underline"
-                >
-                  <Icon name="add" className="text-[16px]" />
-                  Regel hinzufügen
-                </button>
-              </div>
-
-              {widget.config.rules.length === 0 ? (
-                <p className="text-xs text-on-surface-variant/60 italic">
-                  Keine Regeln definiert.
-                </p>
-              ) : (
-                <div className="divide-y divide-outline-variant/30 border border-outline-variant rounded-lg overflow-hidden">
-                  {widget.config.rules.map((rule, i) => (
-                    <div key={i} className="flex items-center gap-3 px-3 py-2 bg-surface hover:bg-surface-container-low transition-colors">
-                      <button
-                        type="button"
-                        onClick={() => {
-                          const updated = widget.config.rules.map((r, j) =>
-                            j === i ? { ...r, enabled: !r.enabled } : r
-                          );
-                          onUpdateConfig("rules", updated);
-                        }}
-                        className={`shrink-0 w-5 h-5 rounded border-2 flex items-center justify-center transition-colors ${
-                          rule.enabled
-                            ? "bg-primary border-primary text-on-primary"
-                            : "border-outline-variant bg-surface"
-                        }`}
-                        aria-label={rule.enabled ? "Deaktivieren" : "Aktivieren"}
-                      >
-                        {rule.enabled && <Icon name="check" className="text-[14px]" />}
-                      </button>
-                      <input
-                        value={rule.text}
-                        onChange={(e) => {
-                          const updated = widget.config.rules.map((r, j) =>
-                            j === i ? { ...r, text: e.target.value } : r
-                          );
-                          onUpdateConfig("rules", updated);
-                        }}
-                        placeholder="Neue Regel..."
-                        className={`flex-1 bg-transparent text-sm outline-none ${
-                          rule.enabled ? "text-on-surface" : "text-on-surface-variant line-through"
-                        }`}
-                      />
-                      <button
-                        type="button"
-                        onClick={() =>
-                          onUpdateConfig("rules", widget.config.rules.filter((_, j) => j !== i))
-                        }
-                        aria-label="Regel entfernen"
-                        className="shrink-0 p-1 text-on-surface-variant hover:text-error transition-colors"
-                      >
-                        <Icon name="close" className="text-[16px]" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
+            {/* Hinweis: System-Prompt & Regeln leben im Agenten */}
+            <div className="flex items-start gap-2 rounded-lg border border-outline-variant bg-surface-container-low px-3 py-2 text-xs text-on-surface-variant">
+              <Icon name="psychology" className="text-primary text-[16px] mt-0.5" />
+              <span>
+                System-Prompt und Regeln werden im Agenten konfiguriert
+                {selectedAgent ? (
+                  <>
+                    {" "}—{" "}
+                    <Link to={`/agents/${selectedAgent.id}`} className="text-primary hover:underline">
+                      „{selectedAgent.name}" öffnen
+                    </Link>
+                  </>
+                ) : (
+                  ", sobald ein Agent gewählt ist."
+                )}
+              </span>
             </div>
 
             <div className="divide-y divide-outline-variant/30">
@@ -599,7 +550,7 @@ export function WidgetConfigView({
           <Card className="p-6 space-y-stack-sm">
             <h3 className="font-headline-md text-base font-bold flex items-center gap-2">
               <Icon name="code" className="text-primary" />
-              Output — Widget-Code
+              Output — Einbettung
             </h3>
 
             {isNew && (

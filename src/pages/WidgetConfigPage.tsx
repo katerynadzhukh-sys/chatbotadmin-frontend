@@ -2,8 +2,10 @@ import { useEffect, useState } from "react";
 import { useNavigate, useParams } from "react-router-dom";
 import { WidgetConfigView } from "../components/WidgetConfigView";
 import { createDefaultConfig, deleteWidget, fetchWidgets, saveWidget } from "../data/widgetsStore";
+import { fetchAgents } from "../data/agentsStore";
 import { useCurrentUser } from "../hooks/useCurrentUser";
 import type { Widget, WidgetAccent, WidgetStatus } from "../types/widget";
+import type { Agent } from "../types/agent";
 
 function emptyWidget(id: string): Widget {
   return {
@@ -21,14 +23,15 @@ function emptyWidget(id: string): Widget {
 
 const WIDGET_BASE_URL = import.meta.env.VITE_WIDGET_BASE_URL || "https://ki-chat.uni-giessen.de";
 
-function buildEmbedCode(widgetId: string, knowledgeBaseId: string, routing: string): string {
+function buildEmbedCode(widgetId: string, routing: string): string {
+  // data-kb entfällt: das Modell kommt jetzt aus dem verknüpften Agenten, das
+  // Backend löst es serverseitig auf (widget.js liest nur data-widget-id).
   return `<!-- 1. Globaler Loader (Einmalig im Theme / <head> einbinden) -->
 <script src="${WIDGET_BASE_URL}/widget.js" defer></script>
 
 <!-- 2. Widget-Platzhalter (Im Seiteninhalt einfügen) -->
 <div class="chatbot-widget"
   data-widget-id="${widgetId || "widget-id"}"
-  data-kb="${knowledgeBaseId || "kb-id"}"
   data-routing="${routing || "public"}-widget"
   data-lang="de"
 ></div>`;
@@ -51,7 +54,23 @@ export function WidgetConfigPage() {
   const [widget, setWidget] = useState<Widget>(() =>
     emptyWidget(isNew ? crypto.randomUUID() : id ?? ""),
   );
+  const [agents, setAgents] = useState<Agent[]>([]);
   const [saveError, setSaveError] = useState<string | null>(null);
+
+  // Agenten für die Auswahl laden (der Konnektor verweist nur per agentId).
+  useEffect(() => {
+    let ignore = false;
+    fetchAgents()
+      .then((list) => {
+        if (!ignore) setAgents(list);
+      })
+      .catch(() => {
+        if (!ignore) setAgents([]);
+      });
+    return () => {
+      ignore = true;
+    };
+  }, []);
 
   // Beim Bearbeiten das passende Widget vom Backend laden und setzen.
   useEffect(() => {
@@ -93,7 +112,7 @@ export function WidgetConfigPage() {
     setSaveError(null);
     try {
       if (isNew) {
-        if (!widget.name.trim() || !widget.knowledgeBaseId.trim()) return;
+        if (!widget.name.trim() || !widget.agentId) return;
         const saved = await saveWidget(widget);
         setWidget(saved);
         setSaved(true);
@@ -143,12 +162,13 @@ export function WidgetConfigPage() {
       ) : null}
       <WidgetConfigView
       widget={widget}
+      agents={agents}
       isNew={isNew}
       isActive={widget.status === "active"}
       saved={saved}
       canDelete={canDelete}
       copied={copied}
-      embedCode={buildEmbedCode(previewId, widget.knowledgeBaseId, widget.routing)}
+      embedCode={buildEmbedCode(previewId, widget.routing)}
       directUrl={buildDirectUrl(previewId)}
       onSave={handleSave}
       onCancel={() => navigate("/")}

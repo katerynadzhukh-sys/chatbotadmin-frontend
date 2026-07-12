@@ -2,16 +2,16 @@ import { useEffect, useState } from "react";
 import { AddWidgetCard } from "../components/AddWidgetCard";
 import { SearchToolbar, type SortOption, type StatusFilter } from "../components/SearchToolbar";
 import { WidgetCard } from "../components/WidgetCard";
-import { fetchModels } from "../data/models";
+import { fetchAgents } from "../data/agentsStore";
 import { fetchWidgets } from "../data/widgetsStore";
 import type { Widget } from "../types/widget";
 
 export function DashboardPage() {
   const [widgets, setWidgets] = useState<Widget[]>([]);
   const [loadError, setLoadError] = useState<string | null>(null);
-  // Zuordnung Knowledge-Base-ID → Klarname, damit die Karten den Namen statt
-  // der kb-…-ID zeigen. Fehlschläge sind unkritisch (dann greift die ID).
-  const [kbNames, setKbNames] = useState<Record<string, string>>({});
+  // Zuordnung agentId → Agent-Name, damit die Karten den verknüpften Agenten
+  // statt einer Modell-ID zeigen. Fehlschläge sind unkritisch.
+  const [agentNames, setAgentNames] = useState<Record<string, string>>({});
 
   useEffect(() => {
     fetchWidgets()
@@ -21,13 +21,13 @@ export function DashboardPage() {
       })
       .catch((err: unknown) => setLoadError(err instanceof Error ? err.message : "Unbekannter Fehler"));
 
-    fetchModels()
-      .then((models) => {
+    fetchAgents()
+      .then((list) => {
         const map: Record<string, string> = {};
-        for (const m of models) if (m.name) map[m.id] = m.name;
-        setKbNames(map);
+        for (const a of list) map[a.id] = a.name;
+        setAgentNames(map);
       })
-      .catch(() => setKbNames({}));
+      .catch(() => setAgentNames({}));
   }, []);
 
   const [search, setSearch] = useState("");
@@ -65,18 +65,18 @@ export function DashboardPage() {
 
       {loadError ? (
         <div className="rounded-lg border border-error/40 bg-error/10 px-4 py-3 text-sm text-error">
-          Widgets konnten nicht geladen werden: {loadError}
+          Konnektoren konnten nicht geladen werden: {loadError}
         </div>
       ) : null}
 
       <div className="flex items-center justify-between border-b border-outline-variant pb-4">
-        <h2 className="font-headline-md text-headline-md text-on-surface">Ihre Widgets</h2>
-        <p className="text-on-surface-variant font-body-base text-sm">{filteredWidgets.length} Widgets gefunden</p>
+        <h2 className="font-headline-md text-headline-md text-on-surface">Ihre Konnektoren</h2>
+        <p className="text-on-surface-variant font-body-base text-sm">{filteredWidgets.length} Konnektoren</p>
       </div>
 
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-gutter">
         {filteredWidgets.map((widget) => (
-          <WidgetCard key={widget.id} widget={widget} kbName={kbNames[widget.knowledgeBaseId]} />
+          <WidgetCard key={widget.id} widget={widget} agentName={widget.agentId ? agentNames[widget.agentId] : undefined} />
         ))}
         <AddWidgetCard />
       </div>
