@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strings"
 
+	"github.com/stenseegel/chatbotadmin-backend/internal/agents"
 	"github.com/stenseegel/chatbotadmin-backend/internal/apikeyauth"
 	"github.com/stenseegel/chatbotadmin-backend/internal/apikeys"
 	"github.com/stenseegel/chatbotadmin-backend/internal/auth"
@@ -18,6 +19,7 @@ type routerDeps struct {
 	users    *users.Handler
 	apiKeys  *apikeys.Handler
 	widgets  *widgets.Handler
+	agents   *agents.Handler
 	proxy    *modelproxy.Handler
 	jwtMW    *auth.Middleware
 	apiKeyMW *apikeyauth.Middleware
@@ -75,6 +77,15 @@ func newRouter(d routerDeps) *http.ServeMux {
 	// behind auth. It is scoped to the widget's stored model/limits and
 	// rate-limited per IP inside the handler.
 	mux.HandleFunc("POST /api/widgets/{id}/chat", d.widgets.Chat)
+
+	// ---- agents (Ebene 1 — the reusable "brain") -----------------------------
+	// All admin-only (JWT). Unlike widgets there is no public GET: widget.js
+	// never fetches an agent directly; it consumes the resolved public config
+	// from the widgets endpoint. Deleting is superadmin-only and additionally
+	// refused (409) while any widget still references the agent.
+	mux.Handle("GET /api/agents", jwt(d.agents.List))
+	mux.Handle("PUT /api/agents/{id}", jwt(d.agents.Upsert))
+	mux.Handle("DELETE /api/agents/{id}", auth.RoleChain(d.jwtMW, auth.RoleSuperAdmin)(d.agents.Delete))
 
 	// ---- model proxy (JWT or API key) ----------------------------------------
 	// The browser admin UI calls these with its JWT; programmatic callers may

@@ -1,4 +1,4 @@
-package widgets
+package agents
 
 import (
 	"context"
@@ -9,8 +9,10 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
-// PGStore is a PostgreSQL-backed implementation of the widgets Store interface.
-// Each widget is persisted as a single JSONB blob keyed by its string id.
+// PGStore is a PostgreSQL-backed implementation of the agents Store interface.
+// Each agent is persisted as a single JSONB blob keyed by its string id
+// (a UUID), mirroring the widgets store: the raw request JSON is stored
+// verbatim so fields the backend does not model survive a round-trip.
 type PGStore struct {
 	pool *pgxpool.Pool
 }
@@ -23,10 +25,10 @@ func NewStore(pool *pgxpool.Pool) *PGStore {
 // Compile-time interface assertion.
 var _ Store = (*PGStore)(nil)
 
-// List returns every widget's stored JSON, ordered by id. An empty (non-nil)
-// slice is returned when there are no widgets.
+// List returns every agent's stored JSON, ordered by id. An empty (non-nil)
+// slice is returned when there are no agents.
 func (s *PGStore) List(ctx context.Context) ([]json.RawMessage, error) {
-	const sql = `SELECT data FROM widgets ORDER BY id`
+	const sql = `SELECT data FROM agents ORDER BY id`
 	rows, err := s.pool.Query(ctx, sql)
 	if err != nil {
 		return nil, err
@@ -44,9 +46,9 @@ func (s *PGStore) List(ctx context.Context) ([]json.RawMessage, error) {
 	return out, rows.Err()
 }
 
-// Get returns the stored JSON for id, or nil when no widget with that id exists.
+// Get returns the stored JSON for id, or nil when no agent with that id exists.
 func (s *PGStore) Get(ctx context.Context, id string) (json.RawMessage, error) {
-	const sql = `SELECT data FROM widgets WHERE id = $1`
+	const sql = `SELECT data FROM agents WHERE id = $1`
 	var data []byte
 	err := s.pool.QueryRow(ctx, sql, id).Scan(&data)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -58,12 +60,11 @@ func (s *PGStore) Get(ctx context.Context, id string) (json.RawMessage, error) {
 	return json.RawMessage(data), nil
 }
 
-// Upsert inserts or replaces the widget with the given id and returns the
-// stored JSON. The raw request JSON is stored verbatim so fields the backend
-// does not model (e.g. stats, accent) survive a round-trip.
+// Upsert inserts or replaces the agent with the given id and returns the stored
+// JSON. The raw request JSON is stored verbatim.
 func (s *PGStore) Upsert(ctx context.Context, id string, data []byte) (json.RawMessage, error) {
 	const sql = `
-		INSERT INTO widgets (id, data, updated_at)
+		INSERT INTO agents (id, data, updated_at)
 		VALUES ($1, $2::jsonb, now())
 		ON CONFLICT (id) DO UPDATE SET data = EXCLUDED.data, updated_at = now()
 		RETURNING data`
@@ -74,26 +75,14 @@ func (s *PGStore) Upsert(ctx context.Context, id string, data []byte) (json.RawM
 	return json.RawMessage(out), nil
 }
 
-// Delete removes the widget with the given id. It reports whether a row was
+// Delete removes the agent with the given id. It reports whether a row was
 // actually deleted so the caller can distinguish a successful delete from a
-// missing widget (404).
+// missing agent (404).
 func (s *PGStore) Delete(ctx context.Context, id string) (bool, error) {
-	const sql = `DELETE FROM widgets WHERE id = $1`
+	const sql = `DELETE FROM agents WHERE id = $1`
 	tag, err := s.pool.Exec(ctx, sql, id)
 	if err != nil {
 		return false, err
 	}
 	return tag.RowsAffected() > 0, nil
-}
-
-// CountByAgent returns how many widgets reference the given agent id (via the
-// widgets.data->>'agentId' field, backed by idx_widgets_agent_id). The agents
-// handler uses this to refuse deleting an agent that is still in use.
-func (s *PGStore) CountByAgent(ctx context.Context, agentID string) (int, error) {
-	const sql = `SELECT count(*) FROM widgets WHERE data->>'agentId' = $1`
-	var n int
-	if err := s.pool.QueryRow(ctx, sql, agentID).Scan(&n); err != nil {
-		return 0, err
-	}
-	return n, nil
 }
