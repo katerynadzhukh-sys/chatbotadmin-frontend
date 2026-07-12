@@ -11,6 +11,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/stenseegel/chatbotadmin-backend/internal/agents"
 	"github.com/stenseegel/chatbotadmin-backend/internal/apikeyauth"
 	"github.com/stenseegel/chatbotadmin-backend/internal/apikeys"
 	"github.com/stenseegel/chatbotadmin-backend/internal/auth"
@@ -61,14 +62,21 @@ func RunServer(cfg *config.Config, version string) error {
 	apiKeyMW := apikeyauth.NewMiddleware(apikeyauth.NewStore(pool))
 
 	proxyH := modelproxy.NewHandler(cfg.KIAPIKey, cfg.KIBaseURL)
+	// The two stores are shared across handlers: the widgets handler resolves a
+	// widget's brain from the agent store, and the agents handler counts how
+	// many widgets reference an agent (delete guard) via the widget store.
+	widgetStore := widgets.NewStore(pool)
+	agentStore := agents.NewStore(pool)
 	// The public per-widget chat endpoint proxies to the same upstream LLM.
-	widgetsH := widgets.NewHandler(widgets.NewStore(pool), proxyH)
+	widgetsH := widgets.NewHandler(widgetStore, agentStore, proxyH)
+	agentsH := agents.NewHandler(agentStore, widgetStore)
 
 	mux := newRouter(routerDeps{
 		auth:     authH,
 		users:    usersH,
 		apiKeys:  apiKeysH,
 		widgets:  widgetsH,
+		agents:   agentsH,
 		proxy:    proxyH,
 		jwtMW:    jwtMW,
 		apiKeyMW: apiKeyMW,

@@ -59,8 +59,17 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteErrorCtx(r.Context(), w, http.StatusForbidden, "Dieses Widget ist derzeit nicht verfügbar.")
 		return
 	}
-	if strings.TrimSpace(wgt.KnowledgeBaseID) == "" {
-		httputil.WriteErrorCtx(r.Context(), w, http.StatusBadRequest, "Für dieses Widget ist keine Knowledge-Base konfiguriert.")
+
+	// The model and token cap come from the widget's linked agent (Ebene 1),
+	// not from the client — a caller cannot point the public endpoint at an
+	// arbitrary model or raise the token cap.
+	brain, err := h.resolveBrain(r.Context(), wgt)
+	if err != nil {
+		httputil.WriteInternalErrorCtx(r.Context(), w, err)
+		return
+	}
+	if strings.TrimSpace(brain.Model) == "" {
+		httputil.WriteErrorCtx(r.Context(), w, http.StatusBadRequest, "Für dieses Widget ist kein Agent/Modell konfiguriert.")
 		return
 	}
 
@@ -76,15 +85,14 @@ func (h *Handler) Chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	// Token cap comes from the widget config (client cannot raise it).
 	var maxTokens *int
-	if wgt.Config != nil && wgt.Config.MaxTokensPerAnswer > 0 {
-		mt := wgt.Config.MaxTokensPerAnswer
+	if brain.MaxTokens > 0 {
+		mt := brain.MaxTokens
 		maxTokens = &mt
 	}
 
 	h.chat.ProxyChat(w, r, modelproxy.ChatParams{
-		Model:     wgt.KnowledgeBaseID,
+		Model:     brain.Model,
 		MaxTokens: maxTokens,
 		Messages:  req.Messages,
 		Stream:    req.Stream,

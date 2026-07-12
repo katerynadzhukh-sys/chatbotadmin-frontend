@@ -34,20 +34,77 @@ type Store interface {
 	Delete(ctx context.Context, id string) (bool, error)
 }
 
+// AgentStore resolves an agent's stored JSON by id. It is satisfied by
+// *agents.PGStore. The widget path uses it to source the "brain" (model,
+// system prompt, rules, token cap) from the linked agent (Ebene 1) rather than
+// from the widget's own embedded config.
+type AgentStore interface {
+	Get(ctx context.Context, id string) (json.RawMessage, error)
+}
+
+// agentBrain is the subset of an agent the widget path consumes. Field names
+// match the agent JSON shape (see migrations/main/0003_agents.sql).
+type agentBrain struct {
+	Model        string       `json:"model"`
+	SystemPrompt string       `json:"systemPrompt"`
+	Rules        []widgetRule `json:"rules"`
+	MaxTokens    int          `json:"maxTokens"`
+}
+
 // Handler holds the dependencies for the widget endpoints.
 type Handler struct {
 	store   Store
+	agents  AgentStore
 	chat    ChatProxy
 	limiter *rateLimiter
 }
 
-// NewHandler creates a Handler using the given Store and chat proxy.
-func NewHandler(store Store, chat ChatProxy) *Handler {
+// NewHandler creates a Handler using the given widget Store, agent store (for
+// resolving the linked brain), and chat proxy.
+func NewHandler(store Store, agents AgentStore, chat ChatProxy) *Handler {
 	return &Handler{
 		store:   store,
+		agents:  agents,
 		chat:    chat,
 		limiter: newRateLimiter(chatRateWindow, chatRateMax),
 	}
+}
+
+// resolveBrain returns the "brain" a widget runs on. The agent linked via
+// widget.agentId (Ebene 1) is the source of truth. During the migration window
+// a widget may still carry its own legacy fields and may not be linked yet, so
+// this falls back to the widget's embedded config when there is no agentId or
+// the referenced agent has gone missing — nothing breaks mid-rollout. A genuine
+// store error is propagated so the caller can return 500.
+func (h *Handler) resolveBrain(ctx context.Context, wgt widget) (agentBrain, error) {
+	// Legacy fallback: the fields that used to live on the widget itself.
+	fallback := agentBrain{Model: wgt.KnowledgeBaseID}
+	if wgt.Config != nil {
+		fallback.SystemPrompt = wgt.Config.StartPrompt
+		fallback.Rules = wgt.Config.Rules
+		fallback.MaxTokens = wgt.Config.MaxTokensPerAnswer
+	}
+
+	if h.agents == nil || strings.TrimSpace(wgt.AgentID) == "" {
+		return fallback, nil
+	}
+	raw, err := h.agents.Get(ctx, wgt.AgentID)
+	if err != nil {
+		return agentBrain{}, err
+	}
+	if raw == nil {
+		// Linked agent was deleted/missing — degrade to the widget's own fields.
+		return fallback, nil
+	}
+	var b agentBrain
+	if err := json.Unmarshal(raw, &b); err != nil {
+		return agentBrain{}, err
+	}
+	// Defensive: if the agent somehow has no model, keep the widget's legacy one.
+	if strings.TrimSpace(b.Model) == "" {
+		b.Model = fallback.Model
+	}
+	return b, nil
 }
 
 // widgetRule is one configurable behaviour rule (only enabled rules are public).
@@ -73,9 +130,11 @@ type widgetConfig struct {
 
 // widget is the subset of the stored object the backend parses (for validation
 // and the public projection). Config is a pointer so a missing "config" key can
-// be told apart from an empty one.
+// be told apart from an empty one. AgentID (Ebene 1) links the widget to the
+// agent that provides its brain; empty on widgets not yet migrated/linked.
 type widget struct {
 	ID              string        `json:"id"`
+	AgentID         string        `json:"agentId"`
 	KnowledgeBaseID string        `json:"knowledgeBaseId"`
 	Routing         string        `json:"routing"`
 	Status          string        `json:"status"`
@@ -210,7 +269,12 @@ func (h *Handler) PublicConfig(w http.ResponseWriter, r *http.Request) {
 		httputil.WriteInternalErrorCtx(r.Context(), w, err)
 		return
 	}
-	httputil.WriteJSONCtx(r.Context(), w, http.StatusOK, toPublic(wgt))
+	brain, err := h.resolveBrain(r.Context(), wgt)
+	if err != nil {
+		httputil.WriteInternalErrorCtx(r.Context(), w, err)
+		return
+	}
+	httputil.WriteJSONCtx(r.Context(), w, http.StatusOK, toPublic(wgt, brain))
 }
 
 // validate enforces the invariants the wipe-prone raw upsert needs: the body id
@@ -231,8 +295,12 @@ func validate(id string, wgt *widget) string {
 	return ""
 }
 
-// toPublic projects a stored widget onto the public config for widget.js.
-func toPublic(wgt widget) publicConfig {
+// toPublic projects a stored widget onto the public config for widget.js. The
+// presentation fields (title, greeting, colour, templates, …) come from the
+// widget itself (the front, Ebene 3); the brain fields (model, system prompt,
+// rules, token cap) come from the resolved agent (Ebene 1). The wire shape is
+// unchanged, so widget.js and the standalone page need no changes.
+func toPublic(wgt widget, brain agentBrain) publicConfig {
 	cfg := wgt.Config
 	if cfg == nil {
 		cfg = &widgetConfig{}
@@ -244,22 +312,22 @@ func toPublic(wgt widget) publicConfig {
 	}
 
 	rules := []string{}
-	for _, ru := range cfg.Rules {
+	for _, ru := range brain.Rules {
 		if ru.Enabled {
 			rules = append(rules, ru.Text)
 		}
 	}
 
 	var maxTokens *int
-	if cfg.MaxTokensPerAnswer > 0 {
-		mt := cfg.MaxTokensPerAnswer
+	if brain.MaxTokens > 0 {
+		mt := brain.MaxTokens
 		maxTokens = &mt
 	}
 
 	return publicConfig{
 		ID:              wgt.ID,
 		Status:          wgt.Status,
-		KnowledgeBaseID: wgt.KnowledgeBaseID,
+		KnowledgeBaseID: brain.Model,
 		Routing:         wgt.Routing,
 		Title:           cfg.Title,
 		Greeting:        cfg.Greeting,
@@ -268,7 +336,7 @@ func toPublic(wgt widget) publicConfig {
 		Icon:            mapIcon(wgt.Icon),
 		Templates:       templates,
 		Rules:           rules,
-		StartPrompt:     cfg.StartPrompt,
+		StartPrompt:     brain.SystemPrompt,
 		FeedbackButtons: cfg.FeedbackButtons,
 		MaxTokens:       maxTokens,
 	}

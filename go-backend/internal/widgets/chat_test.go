@@ -135,17 +135,66 @@ func writeSSE(w http.ResponseWriter, delta any) {
 	_, _ = io.WriteString(w, "data: "+string(raw)+"\n\n")
 }
 
+// fakeAgentStore is an in-memory widgets.AgentStore. A nil map (or missing id)
+// resolves to no agent, exercising the legacy fallback path.
+type fakeAgentStore struct {
+	data map[string]json.RawMessage
+}
+
+func (s *fakeAgentStore) Get(_ context.Context, id string) (json.RawMessage, error) {
+	v, ok := s.data[id]
+	if !ok {
+		return nil, nil
+	}
+	return v, nil
+}
+
+// agentJSON builds a stored-agent blob with the brain fields the widget path reads.
+func agentJSON(id, model string, maxTokens int) json.RawMessage {
+	b, _ := json.Marshal(map[string]any{
+		"id":        id,
+		"name":      "Agent",
+		"model":     model,
+		"maxTokens": maxTokens,
+		"rules":     []any{},
+	})
+	return b
+}
+
 // newTestHandler wires a widgets.Handler over the fake store + a modelproxy
 // pointed at the fake KB endpoint, and returns a mux that routes the chat path
-// (so r.PathValue("id") is populated exactly as in production).
+// (so r.PathValue("id") is populated exactly as in production). A nil agent
+// store exercises the legacy fallback (brain resolved from the widget itself).
 func newTestHandler(t *testing.T, store Store, kbURL string) http.Handler {
 	t.Helper()
+	return newTestHandlerWithAgents(t, store, nil, kbURL)
+}
+
+func newTestHandlerWithAgents(t *testing.T, store Store, agents AgentStore, kbURL string) http.Handler {
+	t.Helper()
 	proxy := modelproxy.NewHandler("test-key", kbURL)
-	h := NewHandler(store, proxy)
+	h := NewHandler(store, agents, proxy)
 	mux := http.NewServeMux()
 	mux.HandleFunc("POST /api/widgets/{id}/chat", h.Chat)
 	mux.HandleFunc("GET /api/widgets/{id}", h.PublicConfig)
 	return mux
+}
+
+// widgetLinkedJSON builds a widget blob that references an agent by id. Its own
+// legacy knowledgeBaseId is set to a decoy so the test proves the model is
+// taken from the agent, not the widget.
+func widgetLinkedJSON(id, agentID, decoyKB, status string) json.RawMessage {
+	b, _ := json.Marshal(map[string]any{
+		"id":              id,
+		"name":            "Test",
+		"agentId":         agentID,
+		"knowledgeBaseId": decoyKB,
+		"routing":         "public",
+		"status":          status,
+		"icon":            "Bot",
+		"config":          map[string]any{"maxTokensPerAnswer": 111, "title": "Test"},
+	})
+	return b
 }
 
 func chatRequest(id, body string) *http.Request {
@@ -213,6 +262,71 @@ func TestChat_ResolvesKBAndRelaysAnswerWithSources(t *testing.T) {
 	}
 	if up.MaxTokens != 1500 {
 		t.Errorf("upstream max_tokens = %d, want 1500 (widget config, not client 99999)", up.MaxTokens)
+	}
+}
+
+// Phase 3: a widget linked to an agent runs on the AGENT's model and token cap,
+// not the widget's own (legacy) knowledgeBaseId / maxTokensPerAnswer.
+func TestChat_ResolvesModelFromLinkedAgent(t *testing.T) {
+	const agentModel = "kb-from-agent"
+	store := &fakeStore{data: map[string]json.RawMessage{
+		// widget's own knowledgeBaseId is a decoy that must be ignored.
+		"w1": widgetLinkedJSON("w1", "agent-1", "kb-DECOY", "active"),
+	}}
+	agentSt := &fakeAgentStore{data: map[string]json.RawMessage{
+		"agent-1": agentJSON("agent-1", agentModel, 1234),
+	}}
+	var cap capturedUpstream
+	kbSrv := newFakeKB(&cap, "ok")
+	defer kbSrv.Close()
+	handler := newTestHandlerWithAgents(t, store, agentSt, kbSrv.URL)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, chatRequest("w1",
+		`{"messages":[{"role":"user","content":"hi"}],"stream":false}`))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200 (body: %s)", rec.Code, rec.Body.String())
+	}
+	var up struct {
+		Model     string `json:"model"`
+		MaxTokens int    `json:"max_tokens"`
+	}
+	if err := json.Unmarshal(cap.body, &up); err != nil {
+		t.Fatalf("decode upstream body: %v", err)
+	}
+	if up.Model != agentModel {
+		t.Errorf("upstream model = %q, want the agent's model %q (not the widget decoy)", up.Model, agentModel)
+	}
+	if up.MaxTokens != 1234 {
+		t.Errorf("upstream max_tokens = %d, want 1234 (agent, not widget's 111)", up.MaxTokens)
+	}
+}
+
+// A widget whose agentId points at a missing agent degrades to its own legacy
+// fields instead of failing — the migration-window safety net.
+func TestChat_FallsBackToWidgetWhenAgentMissing(t *testing.T) {
+	store := &fakeStore{data: map[string]json.RawMessage{
+		"w1": widgetLinkedJSON("w1", "ghost-agent", "kb-legacy", "active"),
+	}}
+	agentSt := &fakeAgentStore{data: map[string]json.RawMessage{}} // agent not found
+	var cap capturedUpstream
+	kbSrv := newFakeKB(&cap, "ok")
+	defer kbSrv.Close()
+	handler := newTestHandlerWithAgents(t, store, agentSt, kbSrv.URL)
+
+	rec := httptest.NewRecorder()
+	handler.ServeHTTP(rec, chatRequest("w1", `{"messages":[{"role":"user","content":"hi"}],"stream":false}`))
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status = %d, want 200", rec.Code)
+	}
+	var up struct {
+		Model string `json:"model"`
+	}
+	_ = json.Unmarshal(cap.body, &up)
+	if up.Model != "kb-legacy" {
+		t.Errorf("upstream model = %q, want widget's legacy kb %q", up.Model, "kb-legacy")
 	}
 }
 
