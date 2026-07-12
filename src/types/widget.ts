@@ -32,6 +32,13 @@ export interface WidgetConfig {
 export interface Widget {
   id: string;
   name: string;
+  /**
+   * Verweis auf den Agenten (Ebene 1), der die Denkschicht liefert. Optional
+   * während der Migration: Bestands-Widgets bekommen die ID per Backfill, neue
+   * Konnektoren setzen sie über die Agent-Auswahl (Phase 6). Solange leer,
+   * fällt das Backend auf die alten Widget-Felder zurück.
+   */
+  agentId?: string;
   knowledgeBaseId: string;
   routing: string;
   status: WidgetStatus;
